@@ -1,6 +1,7 @@
 #include "capture.h"
 #include "fixture.h"
 #include "recorder.h"
+#include "meeting_index.h"
 #include "viewer.h"
 #include "activity_signals.h"
 #include "index_scheduler.h"
@@ -58,6 +59,18 @@ int integer(const QCommandLineParser &p, const QString &name, int lo, int hi) {
     const double value = number(p, name, lo, hi);
     if (std::floor(value) != value) throw std::runtime_error(("--" + name + " must be an integer").toStdString());
     return int(value);
+}
+qint64 timeArgument(const QCommandLineParser &p, const QString &name) {
+    if (!p.isSet(name)) return 0;
+    const QString value = p.value(name).trimmed();
+    bool epoch = false;
+    const qint64 ms = value.toLongLong(&epoch);
+    if (epoch) return ms;
+    const QDateTime parsed = QDateTime::fromString(value, Qt::ISODateWithMs);
+    if (parsed.isValid()) return parsed.toMSecsSinceEpoch();
+    const QDate date = QDate::fromString(value, Qt::ISODate);
+    if (date.isValid()) return QDateTime(date, QTime(0, 0), QTimeZone::UTC).toMSecsSinceEpoch();
+    throw std::runtime_error(QString("--%1 must be ISO-8601 or epoch milliseconds").arg(name).toStdString());
 }
 double cpu(const rusage &u) {
     return u.ru_utime.tv_sec + u.ru_utime.tv_usec / 1e6 + u.ru_stime.tv_sec + u.ru_stime.tv_usec / 1e6;
@@ -215,7 +228,7 @@ int main(int argc, char **argv) {
     p.setApplicationDescription("Local screen history and searchable text. Recording is explicitly controlled with daemon commands.");
     p.addHelpOption();
     p.addVersionOption();
-    p.addPositionalArgument("command", "demo | record | outputs | fixture | export-fixture | index | service | prioritize | catch-up | status | search | list | extract | view");
+    p.addPositionalArgument("command", "demo | record | outputs | fixture | export-fixture | index | service | prioritize | catch-up | status | search | recall | list | extract | view");
     p.addPositionalArgument("query", "Literal search words (search command only)", "[query...]");
     p.addOptions({
         {{"d", "dir"}, "New recording directory, or existing dataset for search/view.", "path", "runs/demo"},
@@ -264,8 +277,14 @@ int main(int argc, char **argv) {
         {"workload", "Synthetic workload: mixed scenes or editing one invoice.", "name", "mixed"},
         {"backend", "Wayland capture backend: native or grim.", "name", "native"},
         {"output", "Explicit Wayland output name for record.", "name"},
-        {"id", "Frame ID for extraction.", "id", "1"},
-        {"out", "Destination image for extraction.", "path", "runs/extracted.png"},
+        {"id", "Frame ID for extraction or recall moment fetch.", "id", "1"},
+        {"out", "Destination image for extraction or recall moment fetch.", "path", "runs/extracted.png"},
+        {"since", "recall/list: include moments captured at or after this ISO-8601 time or epoch milliseconds.", "time"},
+        {"until", "recall/list: include moments captured at or before this ISO-8601 time or epoch milliseconds.", "time"},
+        {"limit", "recall/list: maximum results returned (1-1000).", "count", "20"},
+        {"offset", "recall/list: results to skip before the first returned.", "count", "0"},
+        {"order", "recall: chronological or rank result order.", "order", "chronological"},
+        {"source", "recall: screen, meetings, or all.", "source", "screen"},
     });
     p.process(*app);
     std::signal(SIGINT, stop);
@@ -488,7 +507,82 @@ int main(int argc, char **argv) {
             if (query.trimmed().isEmpty()) throw std::runtime_error("Provide search words after search");
             json(frameJson(replay::searchFrames(directory, query))); return 0;
         }
-        if (command == "list") { json(frameJson(replay::listFrames(directory))); return 0; }
+        if (command == "list") {
+            json(frameJson(replay::listFrames(directory,
+                p.isSet("limit") ? integer(p, "limit", 1, 1000) : 200,
+                p.isSet("offset") ? integer(p, "offset", 0, 2147483647) : 0,
+                timeArgument(p, "since"), timeArgument(p, "until"))));
+            return 0;
+        }
+        if (command == "recall") {
+            const qint64 sinceMs = timeArgument(p, "since");
+            const qint64 untilMs = timeArgument(p, "until");
+            if (sinceMs > 0 && untilMs > 0 && sinceMs > untilMs)
+                throw std::runtime_error("--since must not be after --until");
+            const int limit = integer(p, "limit", 1, 1000);
+            const int offset = integer(p, "offset", 0, 2147483647);
+            const QString order = p.value("order");
+            if (order != "chronological" && order != "rank")
+                throw std::runtime_error("--order must be chronological or rank");
+            const QString source = p.value("source");
+            if (source != "screen" && source != "meetings" && source != "all")
+                throw std::runtime_error("--source must be screen, meetings or all");
+            if (p.isSet("id")) {
+                const qint64 frameId = integer(p, "id", 1, 2147483647);
+                const auto frame = replay::frameById(directory, frameId);
+                if (!frame) throw std::runtime_error("Recorded frame does not exist");
+                QJsonObject moment{{"schema_version", 1}, {"archive", directory},
+                    {"moment", QJsonObject{
+                        {"id", frame->id},
+                        {"timestamp_ms", frame->timestampMs},
+                        {"timestamp", QDateTime::fromMSecsSinceEpoch(frame->timestampMs, QTimeZone::UTC).toString(Qt::ISODateWithMs)},
+                        {"last_timestamp_ms", frame->lastTimestampMs}, {"observations", frame->observationCount},
+                        {"text", frame->text}, {"ocr_state", frame->ocrState}, {"ocr_error", frame->ocrError},
+                        {"codec", frame->codec}, {"width", frame->width}, {"height", frame->height},
+                        {"available", frame->available}, {"archive_available", frame->archiveAvailable},
+                        {"image_path", frame->archiveAvailable ? frame->path : frame->originalPath},
+                        {"original_path", frame->originalPath},
+                        {"lines", replay::frameTextLines(directory, frameId)}}},
+                    {"neighbors", frameJson(replay::framesNear(directory, frameId, integer(p, "context-seconds", 0, 300)))}};
+                const bool extractRequested = p.isSet("out");
+                const auto target = p.value("out");
+                if (extractRequested) {
+                    if (QFile::exists(target)) throw std::runtime_error("Extraction destination already exists");
+                    QDir().mkpath(QFileInfo(target).absolutePath());
+                    if (!replay::loadFrame(directory, frameId).save(target)) throw std::runtime_error("Could not save extracted frame");
+                    moment["extracted_image"] = QFileInfo(target).absoluteFilePath();
+                }
+                json(moment); return 0;
+            }
+            const auto query = positional.mid(1).join(' ');
+            if (query.trimmed().isEmpty()) throw std::runtime_error("Provide search words, or use --id to fetch one moment");
+            QJsonObject result{{"schema_version", 1}, {"archive", directory}, {"query", query},
+                {"source", source}, {"order", order}, {"limit", limit}, {"offset", qint64(offset)}};
+            if (source != "meetings") {
+                // Prefix mode matches the viewer's final-token expansion; see searchFramePage.
+                const auto page = replay::searchFramePage(directory, query, limit, offset, replay::SearchMode::PrefixLastToken,
+                    2, 0, sinceMs, untilMs, order == "rank" ? replay::SearchOrder::Rank : replay::SearchOrder::Chronological);
+                result["total_matches"] = page.totalMatches;
+                result["results"] = frameJson(page.frames);
+            } else result["total_matches"] = 0;
+            if (source != "screen") {
+                const auto meetings = replay::searchMeetings(directory, query, limit, offset);
+                result["meetings_total_matches"] = meetings.totalMatches;
+                QJsonArray entries;
+                for (const auto &meeting : meetings.results) {
+                    QJsonObject entry{{"id", meeting.meeting.id}, {"title", meeting.meeting.title},
+                        {"started_at_ms", meeting.meeting.startedAtMs}, {"time_known", meeting.meeting.timeKnown},
+                        {"duration_seconds", meeting.meeting.durationSeconds},
+                        {"matching_passages", meeting.matchingPassages}};
+                    if (const auto record = replay::readMeeting(directory, meeting.meeting.id))
+                        entry["transcript"] = record->transcript;
+                    entries.append(entry);
+                }
+                result["meetings"] = entries;
+            } else result["meetings"] = QJsonArray{};
+            result["coverage"] = replay::rangeCoverage(directory, sinceMs, untilMs);
+            json(result); return 0;
+        }
         if (command == "view") {
             std::unique_ptr<IndexWorker> worker;
             QTimer workerPoll;

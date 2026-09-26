@@ -2475,10 +2475,17 @@ void recordGap(const QString &requestedDirectory, qint64 startMs, qint64 endMs, 
     insert.bind(1, startMs); insert.bind(2, endMs); insert.bind(3, reason.trimmed()); insert.next();
 }
 
-QVector<FrameRecord> listFrames(const QString &directory, int limit, int offset) {
+QVector<FrameRecord> listFrames(const QString &directory, int limit, int offset, qint64 sinceMs, qint64 untilMs) {
     Database db(dbPath(directory), false);
-    const QByteArray sql = frameColumns(db) + "ORDER BY f.timestamp_ms,f.id LIMIT ? OFFSET ?";
-    Statement query(db, sql.constData()); query.bind(1, std::clamp(limit, 1, 1000)); query.bind(2, std::max(offset, 0));
+    QString filter;
+    if (sinceMs > 0) filter += "WHERE f.timestamp_ms>=? ";
+    if (untilMs > 0) filter += QString(filter.isEmpty() ? "WHERE" : "AND") + " f.timestamp_ms<=? ";
+    const QByteArray sql = frameColumns(db) + filter.toUtf8() + "ORDER BY f.timestamp_ms,f.id LIMIT ? OFFSET ?";
+    Statement query(db, sql.constData());
+    int column = 1;
+    if (sinceMs > 0) query.bind(column++, sinceMs);
+    if (untilMs > 0) query.bind(column++, untilMs);
+    query.bind(column++, std::clamp(limit, 1, 1000)); query.bind(column++, std::max(offset, 0));
     return readRows(query);
 }
 
@@ -2494,19 +2501,31 @@ QVector<FrameRecord> searchFrames(const QString &directory, const QString &text,
 }
 
 SearchPage searchFramePage(const QString &directory, const QString &text, int limit, qint64 offset,
-                          SearchMode mode, int timelineLimit, qint64 anchorFrameId) {
+                          SearchMode mode, int timelineLimit, qint64 anchorFrameId, qint64 sinceMs,
+                          qint64 untilMs, SearchOrder order) {
     SearchPage result;
     result.offset = std::max<qint64>(0, offset);
     const auto terms = searchTerms(text);
     if (terms.isEmpty()) return result;
     Database db(dbPath(directory), false);
     const QString expression = searchExpression(db, terms, mode);
+    // Rank order must keep the matching expression identical; only the page
+    // ordering differs. The anchor timeline assumes chronological ordinals.
+    const bool rank = order == SearchOrder::Rank;
+    QString timeFilter;
+    if (sinceMs > 0) timeFilter += " AND f.timestamp_ms>=?";
+    if (untilMs > 0) timeFilter += " AND f.timestamp_ms<=?";
+    const auto bindTime = [&](Statement &query, int column) -> int {
+        if (sinceMs > 0) query.bind(column++, sinceMs);
+        if (untilMs > 0) query.bind(column++, untilMs);
+        return column;
+    };
     db.exec("BEGIN");
     qint64 firstId = 0, lastId = 0, lastStart = 0;
     {
         Statement summary(db, "SELECT COUNT(*),MIN(f.timestamp_ms),MAX(f.last_timestamp_ms),MIN(f.id),MAX(f.id),MAX(f.timestamp_ms) "
-            "FROM frames f JOIN frame_text ON frame_text.rowid=f.id WHERE frame_text MATCH ?");
-        summary.bind(1, expression); summary.next();
+            "FROM frames f JOIN frame_text ON frame_text.rowid=f.id WHERE frame_text MATCH ?" + timeFilter.toUtf8());
+        summary.bind(1, expression); bindTime(summary, 2); summary.next();
         result.totalMatches = result.timeline.totalFrames = summary.number(0);
         result.timeline.firstTimestampMs = summary.number(1);
         result.timeline.lastTimestampMs = summary.number(2);
@@ -2514,18 +2533,19 @@ SearchPage searchFramePage(const QString &directory, const QString &text, int li
     }
     if (!result.totalMatches) { result.offset = 0; db.exec("COMMIT"); return result; }
     const int pageSize = std::clamp(limit, 1, 1000);
-    if (anchorFrameId > 0) {
+    if (anchorFrameId > 0 && !rank) {
         // A newly indexed earlier frame can shift every later ordinal. Resolve
         // the stable marker ID and its page in the same snapshot as the rows.
         Statement anchor(db, "SELECT f.timestamp_ms FROM frames f JOIN frame_text ON frame_text.rowid=f.id "
-            "WHERE f.id=? AND frame_text MATCH ?");
-        anchor.bind(1, anchorFrameId); anchor.bind(2, expression);
+            "WHERE f.id=? AND frame_text MATCH ?" + timeFilter.toUtf8());
+        anchor.bind(1, anchorFrameId); anchor.bind(2, expression); bindTime(anchor, 3);
         if (anchor.next()) {
             const qint64 timestamp = anchor.number(0);
-            Statement rank(db, "SELECT COUNT(*) FROM frames f JOIN frame_text ON frame_text.rowid=f.id "
-                "WHERE frame_text MATCH ? AND (f.timestamp_ms<? OR (f.timestamp_ms=? AND f.id<?))");
-            rank.bind(1, expression); rank.bind(2, timestamp); rank.bind(3, timestamp); rank.bind(4, anchorFrameId);
-            rank.next(); const qint64 ordinal = rank.number(0);
+            Statement rankRows(db, "SELECT COUNT(*) FROM frames f JOIN frame_text ON frame_text.rowid=f.id "
+                "WHERE frame_text MATCH ? AND (f.timestamp_ms<? OR (f.timestamp_ms=? AND f.id<?))" + timeFilter.toUtf8());
+            rankRows.bind(1, expression); rankRows.bind(2, timestamp); rankRows.bind(3, timestamp); rankRows.bind(4, anchorFrameId);
+            bindTime(rankRows, 5);
+            rankRows.next(); const qint64 ordinal = rankRows.number(0);
             result.offset = (ordinal / pageSize) * pageSize;
             result.selectedRow = int(ordinal % pageSize);
         }
@@ -2536,16 +2556,19 @@ SearchPage searchFramePage(const QString &directory, const QString &text, int li
         result.offset = ((result.totalMatches - 1) / pageSize) * pageSize;
     {
         const QByteArray sql = frameColumns(db) +
-            "JOIN frame_text ON frame_text.rowid=f.id WHERE frame_text MATCH ? ORDER BY f.timestamp_ms,f.id LIMIT ? OFFSET ?";
+            "JOIN frame_text ON frame_text.rowid=f.id WHERE frame_text MATCH ?" + timeFilter.toUtf8() +
+            (rank ? " ORDER BY rank,f.timestamp_ms,f.id" : " ORDER BY f.timestamp_ms,f.id") + " LIMIT ? OFFSET ?";
         Statement rows(db, sql.constData()); rows.bind(1, expression);
-        rows.bind(2, pageSize); rows.bind(3, result.offset);
+        const int rowColumn = bindTime(rows, 2);
+        rows.bind(rowColumn, pageSize); rows.bind(rowColumn + 1, result.offset);
         result.frames = readRows(rows);
     }
     const int markerLimit = std::clamp(timelineLimit, 2, 2048);
     if (result.totalMatches <= markerLimit) {
         Statement markers(db, "SELECT f.id,f.timestamp_ms FROM frames f JOIN frame_text ON frame_text.rowid=f.id "
-            "WHERE frame_text MATCH ? ORDER BY f.timestamp_ms,f.id LIMIT ?");
-        markers.bind(1, expression); markers.bind(2, markerLimit);
+            "WHERE frame_text MATCH ?" + timeFilter.toUtf8() + " ORDER BY f.timestamp_ms,f.id LIMIT ?");
+        markers.bind(1, expression);
+        markers.bind(bindTime(markers, 2), markerLimit);
         while (markers.next()) result.timeline.points.append({markers.number(0), markers.number(1), "ready"});
     } else {
         // Aggregate inside SQLite rather than materializing every match or
@@ -2553,11 +2576,13 @@ SearchPage searchFramePage(const QString &directory, const QString &text, int li
         result.timeline.points.append({firstId, result.timeline.firstTimestampMs, "ready"});
         if (markerLimit > 2) {
             Statement markers(db, "SELECT MIN(f.id),MIN(f.timestamp_ms) FROM frames f "
-                "JOIN frame_text ON frame_text.rowid=f.id WHERE frame_text MATCH ? AND f.id<>? AND f.id<>? "
-                "GROUP BY MIN(?,CAST((f.timestamp_ms-?)*1.0*?/(?+1.0) AS INTEGER)) ORDER BY MIN(f.timestamp_ms),MIN(f.id)");
+                "JOIN frame_text ON frame_text.rowid=f.id WHERE frame_text MATCH ? AND f.id<>? AND f.id<>?"
+                + timeFilter.toUtf8() +
+                " GROUP BY MIN(?,CAST((f.timestamp_ms-?)*1.0*?/(?+1.0) AS INTEGER)) ORDER BY MIN(f.timestamp_ms),MIN(f.id)");
             markers.bind(1, expression); markers.bind(2, firstId); markers.bind(3, lastId);
-            markers.bind(4, markerLimit - 3); markers.bind(5, result.timeline.firstTimestampMs);
-            markers.bind(6, markerLimit - 2); markers.bind(7, lastStart - result.timeline.firstTimestampMs);
+            const int column = bindTime(markers, 4);
+            markers.bind(column, markerLimit - 3); markers.bind(column + 1, result.timeline.firstTimestampMs);
+            markers.bind(column + 2, markerLimit - 2); markers.bind(column + 3, lastStart - result.timeline.firstTimestampMs);
             while (markers.next()) result.timeline.points.append({markers.number(0), markers.number(1), "ready"});
         }
         result.timeline.points.append({lastId, lastStart, "ready"});
@@ -2736,6 +2761,85 @@ TextMatches matchingTextLines(const QString &directory, qint64 frameId, const QS
 
 QVector<QRect> matchingTextRects(const QString &directory, qint64 frameId, const QString &text, SearchMode mode) {
     return matchingTextLines(directory, frameId, text, mode).boxes;
+}
+
+QJsonArray frameTextLines(const QString &directory, qint64 frameId) {
+    if (frameId <= 0) return {};
+    Database db(dbPath(directory), false);
+    {
+        Statement exists(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='frame_ocr_geometry'");
+        if (!exists.next()) return {};
+    }
+    // Same bound as matchingTextLines: older or oversized geometry reads as absent.
+    Statement query(db, "SELECT g.lines_json FROM frame_ocr_geometry g WHERE g.frame_id=? AND length(g.lines_json)<=3145728");
+    query.bind(1, frameId);
+    QJsonArray result;
+    if (!query.next()) return result;
+    const auto document = QJsonDocument::fromJson(query.string(0).toUtf8());
+    if (!document.isArray()) return result;
+    for (const auto &value : document.array()) {
+        const auto line = value.toArray();
+        if (line.size() != 5 || !line[4].isString()) continue;
+        result.append(QJsonObject{{"x", line[0].toInt()}, {"y", line[1].toInt()},
+            {"w", line[2].toInt()}, {"h", line[3].toInt()}, {"text", line[4].toString().trimmed()}});
+    }
+    return result;
+}
+
+QVector<FrameRecord> framesNear(const QString &directory, qint64 frameId, int contextSeconds) {
+    if (frameId <= 0 || contextSeconds < 0 || contextSeconds > 300)
+        error("Neighbor lookup requires a positive frame ID and context between 0 and 300 seconds");
+    Database db(dbPath(directory), false);
+    const auto center = frameById(directory, frameId);
+    if (!center) error("Recorded frame does not exist");
+    const QByteArray sql = frameColumns(db) +
+        "WHERE f.id<>? AND f.last_timestamp_ms>=? AND f.timestamp_ms<=? ORDER BY f.timestamp_ms,f.id LIMIT 64";
+    Statement query(db, sql.constData());
+    const qint64 span = qint64(contextSeconds) * 1000;
+    query.bind(1, frameId);
+    query.bind(2, center->timestampMs - span);
+    query.bind(3, center->lastTimestampMs + span);
+    return readRows(query);
+}
+
+QJsonObject rangeCoverage(const QString &directory, qint64 sinceMs, qint64 untilMs) {
+    Database db(dbPath(directory), false);
+    QString filter;
+    if (sinceMs > 0) filter += "WHERE timestamp_ms>=? ";
+    if (untilMs > 0) filter += QString(filter.isEmpty() ? "WHERE" : "AND") + " timestamp_ms<=? ";
+    QJsonObject result{{"pending", 0}, {"ready", 0}, {"failed", 0}, {"disabled", 0}, {"total", 0}, {"gaps", QJsonArray{}}};
+    if (!hasIndexStates(db)) {
+        Statement count(db, "SELECT COUNT(*) FROM frames " + filter.toUtf8());
+        int column = 1;
+        if (sinceMs > 0) count.bind(column++, sinceMs);
+        if (untilMs > 0) count.bind(column++, untilMs);
+        count.next(); result["ready"] = result["total"] = count.number(0);
+        return result;
+    }
+    {
+        Statement counts(db, "SELECT ocr_state,COUNT(*) FROM frames " + filter.toUtf8() + "GROUP BY ocr_state");
+        int column = 1;
+        if (sinceMs > 0) counts.bind(column++, sinceMs);
+        if (untilMs > 0) counts.bind(column++, untilMs);
+        while (counts.next()) { result[counts.string(0)] = counts.number(1); result["total"] = result["total"].toInteger() + counts.number(1); }
+    }
+    {
+        Statement gapsExist(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_gaps'");
+        if (gapsExist.next()) {
+            QString gapFilter;
+            if (sinceMs > 0) gapFilter += "WHERE end_ms>=? ";
+            if (untilMs > 0) gapFilter += QString(gapFilter.isEmpty() ? "WHERE" : "AND") + " start_ms<=? ";
+            Statement gaps(db, "SELECT start_ms,end_ms,reason FROM history_gaps " + gapFilter.toUtf8() + "ORDER BY start_ms,id LIMIT 1000");
+            int column = 1;
+            if (sinceMs > 0) gaps.bind(column++, sinceMs);
+            if (untilMs > 0) gaps.bind(column++, untilMs);
+            auto entries = result["gaps"].toArray();
+            while (gaps.next()) entries.append(QJsonObject{
+                {"start_ms", gaps.number(0)}, {"end_ms", gaps.number(1)}, {"reason", gaps.string(2)}});
+            result["gaps"] = entries;
+        }
+    }
+    return result;
 }
 
 int requestIndexing(const QString &directory, qint64 frameId, int contextSeconds) {
