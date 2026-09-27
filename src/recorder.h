@@ -39,6 +39,7 @@ struct RecorderOptions {
     std::function<double()> ocrCpuPercentProvider;
     int ocrMaxWallMs = 10000;
     QString ocrDataPath; // Empty uses Tesseract's system model directory.
+    QString ocrLanguages = "eng"; // Tesseract languages joined by +, e.g. "eng+fra".
     int ocrMaxHeight = 0; // Zero keeps original OCR pixels; archives always do.
     std::function<bool()> stopRequested;
     bool deferredOcr = false;
@@ -118,6 +119,7 @@ struct IndexerOptions {
     std::function<double(bool)> cpuPercentProvider; // True for priority work or a live catch-up request.
     int ocrMaxWallMs = 10000;
     QString ocrDataPath;
+    QString ocrLanguages = "eng"; // Tesseract languages joined by +, e.g. "eng+fra".
     int ocrMaxHeight = 0;
     // Exact original-pixel reuse from committed full OCR in this dataset only.
     // Disable for an otherwise identical uncached comparison.

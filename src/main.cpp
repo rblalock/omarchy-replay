@@ -7,6 +7,7 @@
 #include "index_resources.h"
 #include "index_service.h"
 #include "recording_service.h"
+#include "selection_ocr.h"
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -114,6 +115,7 @@ public:
             "--ocr-max-wall-ms", QString::number(options.ocrMaxWallMs),
             "--ocr-max-height", QString::number(options.ocrMaxHeight)};
         if (!options.ocrDataPath.isEmpty()) arguments << "--ocr-data-path" << options.ocrDataPath;
+        arguments << "--ocr-langs" << options.ocrLanguages;
         arguments << schedulerArguments;
         process.start(QCoreApplication::applicationFilePath(), arguments);
         if (!process.waitForStarted(3000)) throw std::runtime_error("Cannot start background indexer");
@@ -232,7 +234,8 @@ int main(int argc, char **argv) {
         {"max-mib", "Dataset disk budget in MiB (stops instead of evicting history).", "mib", "512"},
         {"no-ocr", "Skip text recognition to isolate media cost."},
         {"ocr-mode", "Text recognition strategy: full, experimental incremental or regions.", "mode", "full"},
-        {"ocr-data-path", "Optional directory containing eng.traineddata; default uses installed Tesseract data.", "path"},
+        {"ocr-data-path", "Optional directory containing the configured languages' traineddata; default uses installed Tesseract data.", "path"},
+        {"ocr-langs", "Tesseract languages for background indexing, joined by + (e.g. eng+fra).", "languages", "eng"},
         {"ocr-max-height", "Experimental OCR height cap: 0 keeps original, otherwise 256–8192 without upscaling. Archived pixels stay unchanged.", "pixels", "0"},
         {"ocr-cpu-percent", "Optional cooperative OCR CPU budget (0 disables; percent of one CPU).", "percent", "0"},
         {"ocr-cpu-ceiling-percent", "Whole index-worker CPU safety ceiling via a temporary Replay user service (0 disables).", "percent", "0"},
@@ -309,12 +312,18 @@ int main(int argc, char **argv) {
         const int ocrMaxHeight = integer(p, "ocr-max-height", 0, 8192);
         if (ocrMaxHeight > 0 && ocrMaxHeight < 256)
             throw std::runtime_error("--ocr-max-height must be 0 or between 256 and 8192");
+        QString ocrLanguages = p.value("ocr-langs").trimmed();
+        if (ocrLanguages.isEmpty()) ocrLanguages = QStringLiteral("eng");
+        if (!replay::validOcrLanguages(ocrLanguages))
+            throw std::runtime_error("--ocr-langs must be Tesseract language names joined by +, such as eng+fra");
         QString ocrDataPath = p.value("ocr-data-path");
         if (!ocrDataPath.isEmpty()) {
             ocrDataPath = QDir(ocrDataPath).absolutePath();
-            const QFileInfo model(QDir(ocrDataPath).filePath("eng.traineddata"));
-            if (!model.isFile() || !model.isReadable() || model.size() == 0)
-                throw std::runtime_error("--ocr-data-path must contain a readable, nonempty eng.traineddata file");
+            for (const QString &language : ocrLanguages.split('+')) {
+                const QFileInfo model(QDir(ocrDataPath).filePath(language + ".traineddata"));
+                if (!model.isFile() || !model.isReadable() || model.size() == 0)
+                    throw std::runtime_error(QString("--ocr-data-path must contain a readable, nonempty %1.traineddata file").arg(language).toStdString());
+            }
         }
         if (p.isSet("retry-failed") && command != "index")
             throw std::runtime_error("--retry-failed is only supported by index");
@@ -326,11 +335,11 @@ int main(int argc, char **argv) {
             QJsonObject policy;
             for (const QString &key : {QString("scheduler"), QString("ocr-mode"), QString("ocr-cpu-percent"),
                     QString("ocr-max-wall-ms"), QString("ocr-max-height"), QString("ocr-data-path"),
-                    QString("idle-seconds"), QString("idle-cpu-percent"), QString("request-cpu-percent"),
+                    QString("ocr-langs"), QString("idle-seconds"), QString("idle-cpu-percent"), QString("request-cpu-percent"),
                     QString("pressure-cpu-percent"), QString("ocr-cpu-ceiling-percent")}) {
                 if (!p.isSet(key)) continue;
                 QString field = key; field.replace('-', '_');
-                if (key == "scheduler" || key == "ocr-mode" || key == "ocr-data-path") policy[field] = p.value(key);
+                if (key == "scheduler" || key == "ocr-mode" || key == "ocr-data-path" || key == "ocr-langs") policy[field] = p.value(key);
                 else { bool valid = false; const double value = p.value(key).toDouble(&valid);
                     if (!valid || !std::isfinite(value)) throw std::runtime_error("Invalid service policy number");
                     policy[field] = value;
@@ -375,6 +384,7 @@ int main(int argc, char **argv) {
                 arguments << schedulerArguments;
                 if (p.isSet("ocr-max-wall-ms")) arguments << "--ocr-max-wall-ms" << p.value("ocr-max-wall-ms");
                 if (!ocrDataPath.isEmpty()) arguments << "--ocr-data-path" << ocrDataPath;
+                arguments << "--ocr-langs" << ocrLanguages;
                 if (p.isSet("follow")) arguments << "--follow";
                 if (p.isSet("retry-failed")) arguments << "--retry-failed";
                 const auto managed = replay::runManagedIndex(arguments, cpuCeiling, [] { return bool(interrupted); });
@@ -393,6 +403,7 @@ int main(int argc, char **argv) {
             options.ocrReuse = p.isSet("ocr-reuse");
             options.directory = directory; options.ocrMode = p.value("ocr-mode");
             options.ocrDataPath = ocrDataPath; options.ocrMaxHeight = ocrMaxHeight;
+            options.ocrLanguages = ocrLanguages;
             options.ocrCpuPercent = schedulerMode == "adaptive" ? schedulerOptions.activeCpuPercent : number(p, "ocr-cpu-percent", 0, 100);
             if (cpuCeiling > 0 && options.ocrCpuPercent == 0 && !resources.statsJSON().value("enforced").toBool())
                 throw std::runtime_error("Worker CPU ceiling unavailable; configure cooperative OCR pacing or explicitly disable the ceiling");
@@ -497,6 +508,7 @@ int main(int argc, char **argv) {
             viewIndexing.ocrCpuPercent = schedulerOptions.activeCpuPercent;
             viewIndexing.ocrMaxWallMs = p.isSet("ocr-max-wall-ms") ? integer(p, "ocr-max-wall-ms", 1, 60000) : 60000;
             viewIndexing.ocrDataPath = ocrDataPath; viewIndexing.ocrMaxHeight = ocrMaxHeight;
+            viewIndexing.ocrLanguages = ocrLanguages;
             const auto ensureViewIndexer = [&] {
                 try {
                     if (worker && worker->running()) return;
@@ -579,6 +591,7 @@ int main(int argc, char **argv) {
         options.intervalSeconds = interval; options.ocr = !p.isSet("no-ocr");
         options.ocrMode = p.value("ocr-mode");
         options.ocrDataPath = ocrDataPath; options.ocrMaxHeight = ocrMaxHeight;
+        options.ocrLanguages = ocrLanguages;
         options.ocrCpuPercent = schedulerMode == "adaptive" ? schedulerOptions.activeCpuPercent : number(p, "ocr-cpu-percent", 0, 100);
         options.ocrMaxWallMs = schedulerMode == "adaptive" && !p.isSet("ocr-max-wall-ms")
             ? 60000 : integer(p, "ocr-max-wall-ms", 1, 60000);

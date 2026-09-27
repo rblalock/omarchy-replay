@@ -1,5 +1,7 @@
 #include "replay_config.h"
 
+#include "selection_ocr.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -156,6 +158,9 @@ void validateReplayConfig(const ReplayConfig& config) {
     bounded(config.cpuCeilingPercent, 0, 100, "cpu_ceiling_percent");
     if (config.cpuCeilingPercent > 0 && config.cpuCeilingPercent < 1) invalid("cpu_ceiling_percent must be 0 or at least 1");
     bounded(config.idleSeconds, 1, 3600, "idle_seconds");
+    shortText(config.ocrLanguages, 256, "ocr_languages");
+    if (!config.ocrLanguages.trimmed().isEmpty() && !validOcrLanguages(config.ocrLanguages.trimmed()))
+        invalid("ocr_languages must be Tesseract language names joined by +, such as eng+fra");
     if (config.excludedApps.size() + config.skippedApps.size() > 64 || config.excludedWindows.size() > 64)
         invalid("at most 64 combined apps and skip_apps entries and 64 window rules are allowed");
     for (const auto& app : config.excludedApps + config.skippedApps) {
@@ -200,6 +205,7 @@ ReplayConfigDocument loadReplayConfig(const QString& path) {
     read(indexing, "pressure_cpu_percent", config.pressureCpuPercent);
     read(indexing, "cpu_ceiling_percent", config.cpuCeilingPercent);
     read(indexing, "idle_seconds", config.idleSeconds);
+    read(indexing, "ocr_languages", config.ocrLanguages);
     read(section(table, "service"), "login_startup", config.loginStartup);
     read(section(table, "agent"), "preferred", config.preferredAgent);
     read(section(table, "meetings"), "enabled", config.meetingsEnabled);
@@ -269,6 +275,7 @@ void saveReplayConfig(const ReplayConfig& config, const QByteArray& expectedOrig
     indexing.insert_or_assign("pressure_cpu_percent", config.pressureCpuPercent);
     indexing.insert_or_assign("cpu_ceiling_percent", config.cpuCeilingPercent);
     indexing.insert_or_assign("idle_seconds", config.idleSeconds);
+    indexing.insert_or_assign("ocr_languages", config.ocrLanguages.toStdString());
     writableSection(table, "service").insert_or_assign("login_startup", config.loginStartup);
     writableSection(table, "agent").insert_or_assign("preferred", config.preferredAgent.toStdString());
     auto& meetings = writableSection(table, "meetings");

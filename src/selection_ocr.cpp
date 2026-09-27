@@ -20,7 +20,16 @@ constexpr qint64 MaxInputQueued = 128 * 1024;
 constexpr int MaxWallMs = 10000;
 
 SelectionOcrResult failure(const QString &message) { return {{}, message, false}; }
+
+const QRegularExpression &languagePattern() {
+    static const QRegularExpression pattern("^(?:script/)?[A-Za-z0-9_]+(?:\\+(?:script/)?[A-Za-z0-9_]+)*$");
+    return pattern;
+}
 } // namespace
+
+bool validOcrLanguages(const QString &languages) {
+    return !languages.isEmpty() && languages.size() <= 256 && languagePattern().match(languages).hasMatch();
+}
 
 SelectionOcrResult recognizeSelection(const QImage &crop, const std::shared_ptr<std::atomic_bool> &cancel) {
     const auto cancelled = [&] { return cancel && cancel->load(); };
@@ -30,8 +39,7 @@ SelectionOcrResult recognizeSelection(const QImage &crop, const std::shared_ptr<
         return failure("Select a smaller, nonempty area to copy.");
     const QString languages = qEnvironmentVariable("OMARCHY_OCR_LANGS", "eng").trimmed();
     const QString selectedLanguages = languages.isEmpty() ? QStringLiteral("eng") : languages;
-    static const QRegularExpression languagePattern("^(?:script/)?[A-Za-z0-9_]+(?:\\+(?:script/)?[A-Za-z0-9_]+)*$");
-    if (selectedLanguages.size() > 256 || !languagePattern.match(selectedLanguages).hasMatch())
+    if (!validOcrLanguages(selectedLanguages))
         return failure("Check OMARCHY_OCR_LANGS: use language names joined by +, such as eng+deu.");
 
     QElapsedTimer elapsed;

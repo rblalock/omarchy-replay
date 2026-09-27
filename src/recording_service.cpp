@@ -91,6 +91,7 @@ RecorderOptions recordingOptions(const ReplayPaths &paths, const ReplayConfig &c
     options.directory = paths.historyDirectory; options.resume = true; options.rollingStorage = true;
     options.archiveFirst = true; options.deferredOcr = true; options.codec = "webp";
     options.intervalSeconds = config.intervalSeconds; options.ocrMode = "incremental";
+    options.ocrLanguages = config.ocrLanguages;
     options.maxDiskBytes = quint64(config.maxDiskMiB) * MiB;
     options.minFreeBytes = quint64(config.minFreeMiB) * MiB;
     options.maxPendingFrames = 0;
@@ -400,7 +401,8 @@ public:
             "--scheduler", "adaptive", "--ocr-mode", "incremental", "--ocr-max-wall-ms", "60000",
             "--ocr-cpu-percent", QString::number(c.activeCpuPercent), "--idle-cpu-percent", QString::number(c.idleCpuPercent),
             "--request-cpu-percent", QString::number(c.requestCpuPercent), "--pressure-cpu-percent", QString::number(c.pressureCpuPercent),
-            "--idle-seconds", QString::number(c.idleSeconds), "--ocr-cpu-ceiling-percent", QString::number(c.cpuCeilingPercent)};
+            "--idle-seconds", QString::number(c.idleSeconds), "--ocr-cpu-ceiling-percent", QString::number(c.cpuCeilingPercent),
+            "--ocr-langs", c.ocrLanguages};
         indexOutput.clear(); indexErrors.clear();
         indexWorker.start(QCoreApplication::applicationFilePath(), args);
         if (!indexWorker.waitForStarted(2000)) { retryIndexAfter = time + 10000; indexError = "Cannot launch the index worker."; }
@@ -552,7 +554,8 @@ public:
         result["index_policy"] = QJsonObject{{"scheduler", "adaptive"}, {"ocr_mode", "incremental"},
             {"ocr_cpu_percent", c.activeCpuPercent}, {"idle_cpu_percent", c.idleCpuPercent},
             {"request_cpu_percent", c.requestCpuPercent}, {"pressure_cpu_percent", c.pressureCpuPercent},
-            {"idle_seconds", c.idleSeconds}, {"ocr_cpu_ceiling_percent", c.cpuCeilingPercent}};
+            {"idle_seconds", c.idleSeconds}, {"ocr_cpu_ceiling_percent", c.cpuCeilingPercent},
+            {"ocr_langs", c.ocrLanguages}};
         if (indexWorker.state() != QProcess::NotRunning)
             result["worker_policy"] = ownedIndexWorkerPolicy(paths.historyDirectory, indexWorker.processId());
         else if (!workerReceipt.isEmpty()) result["worker_resources"] = workerReceipt.value("resources");

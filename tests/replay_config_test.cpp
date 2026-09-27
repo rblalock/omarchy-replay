@@ -136,6 +136,24 @@ private slots:
         QVERIFY(replay::loadReplayConfig(path).config.skippedApps.isEmpty());
     }
 
+    void ocrLanguagesValidateAndRoundTrip() {
+        QTemporaryDir directory;
+        const QString path = directory.filePath("config.toml");
+        write(path, "[indexing]\nocr_languages = 'eng+fra'\n");
+        const auto document = replay::loadReplayConfig(path);
+        QCOMPARE(document.config.ocrLanguages, "eng+fra");
+        replay::saveReplayConfig(document.config, document.original, path);
+        QCOMPARE(replay::loadReplayConfig(path).config.ocrLanguages, "eng+fra");
+        write(path, "[indexing]\nocr_languages = 'eng fre'\n");
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, replay::loadReplayConfig(path));
+        write(path, "[indexing]\nocr_languages = 'eng;;fra'\n");
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, replay::loadReplayConfig(path));
+        write(path, "[indexing]\nocr_languages = ''\n");
+        // An empty value is accepted: it falls back to eng at the OCR engine,
+        // like an unset OMARCHY_OCR_LANGS in selection OCR.
+        QCOMPARE(replay::loadReplayConfig(path).config.ocrLanguages, "");
+    }
+
     void realTomlAndUnknownValuesSurviveSave() {
         QTemporaryDir directory;
         const QString path = directory.filePath("config.toml");

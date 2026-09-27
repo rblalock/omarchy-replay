@@ -1,5 +1,6 @@
 #include "index_service.h"
 #include "recorder.h"
+#include "selection_ocr.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -146,6 +147,12 @@ QJsonObject checkedPolicy(const QJsonObject &source) {
     number("ocr_max_height", 0, 0, 8192, true);
     const int height = result["ocr_max_height"].toInt();
     if (height > 0 && height < 256) fail("Saved OCR height must be zero or at least 256.");
+    const auto langs = source.value("ocr_langs");
+    if (!langs.isUndefined() && !langs.isString()) fail("Saved OCR languages are invalid.");
+    const QString languages = langs.toString().trimmed();
+    if (!languages.isEmpty() && !validOcrLanguages(languages))
+        fail("Saved OCR languages must be Tesseract language names joined by +, such as eng+fra.");
+    result["ocr_langs"] = languages.isEmpty() ? QString("eng") : languages;
     if (scheduler == "adaptive") {
         number("idle_seconds", 60, 1, 3600, true);
         number("idle_cpu_percent", 40, 1, 100);
@@ -156,8 +163,12 @@ QJsonObject checkedPolicy(const QJsonObject &source) {
     if (!model.isUndefined() && !model.isString()) fail("Saved OCR model path is invalid.");
     if (!model.toString().isEmpty()) {
         const QString path = QFileInfo(model.toString()).canonicalFilePath();
-        const QFileInfo file(QDir(path).filePath("eng.traineddata"));
-        if (path.isEmpty() || !file.isFile() || !file.isReadable() || file.size() == 0) fail("Saved OCR model is unavailable.");
+        if (path.isEmpty()) fail("Saved OCR model is unavailable.");
+        for (const QString &language : result["ocr_langs"].toString().split('+')) {
+            const QFileInfo file(QDir(path).filePath(language + ".traineddata"));
+            if (!file.isFile() || !file.isReadable() || file.size() == 0)
+                fail(QString("Saved OCR model must contain a readable, nonempty %1.traineddata file").arg(language));
+        }
         result["ocr_data_path"] = path;
     }
     return result;
