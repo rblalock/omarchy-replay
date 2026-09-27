@@ -356,7 +356,7 @@ def current_target(app):
     if target.parent != (app / 'versions').resolve():
         raise RuntimeError('Replay app/current points outside its managed versions.')
     from package_runtime import verify_runtime
-    verify_runtime(target)
+    verify_runtime(target, existing=True)
     return os.readlink(pointer)
 
 
@@ -576,7 +576,7 @@ def uninstall(p, args):
         for item in versions.iterdir():
             if item.is_symlink() or not item.is_dir():
                 raise RuntimeError('Unexpected file in Replay runtime versions; remove it manually after review.')
-            verify_runtime(item); installed.append(item)
+            verify_runtime(item, existing=True); installed.append(item)
     recording = regular_snapshot(p['recording'])
     saved = json.loads(recording[0]) if recording else {}
     if not isinstance(saved, dict):
@@ -612,7 +612,7 @@ def uninstall(p, args):
         lease.release()
     # Desktop removal is committed. Version deletion is safe, bounded to verified payloads.
     for item in installed:
-        verify_runtime(item); shutil.rmtree(item)
+        verify_runtime(item, existing=True); shutil.rmtree(item)
     if versions.exists():
         versions.rmdir()
     if p['app'].exists():

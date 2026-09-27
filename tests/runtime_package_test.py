@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BINARY = Path(sys.argv.pop(1)).resolve() if len(sys.argv) > 1 and not sys.argv[1].startswith('-') else ROOT / 'build/replay'
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / 'scripts'))
-from package_runtime import MANIFEST_NAME, PAYLOAD, stage_runtime, verify_runtime
+from package_runtime import MANIFEST_NAME, PAYLOAD, content_hash, file_hash, stage_runtime, verify_runtime
 from runtime_layout import VERSION, native_binary
 
 
@@ -136,6 +136,35 @@ class RuntimePackageTest(unittest.TestCase):
                     path.write_text(json.dumps(manifest))
                 with self.assertRaises(RuntimeError):
                     verify_runtime(destination)
+
+    def test_existing_runtime_with_older_payload_set_verifies_and_unknown_paths_are_rejected(self):
+        destination = self.root / 'older'
+        stage_runtime(self.source, destination)
+        path = destination / MANIFEST_NAME
+        manifest = json.loads(path.read_text())
+        # A 0.1.0-style installation: no scripts/replay_mcp.py anywhere.
+        manifest['files'].pop('scripts/replay_mcp.py')
+        (destination / 'scripts/replay_mcp.py').unlink()
+        manifest['content_hash'] = content_hash(manifest['version'], manifest['files'])
+        path.write_text(json.dumps(manifest))
+        self.assertEqual(verify_runtime(destination, existing=True)['files'], manifest['files'])
+        with self.assertRaisesRegex(RuntimeError, 'approved payload'):
+            verify_runtime(destination)
+        # An unknown path in the manifest is still rejected, even when hashed correctly.
+        older = json.loads(path.read_text())
+        (destination / 'scripts/unknown.py').write_bytes(b'x' * 4096)
+        unknown = destination / 'scripts/unknown.py'
+        unknown.chmod(0o644)
+        older['files']['scripts/unknown.py'] = {'sha256': file_hash(unknown), 'mode': 0o644}
+        older['content_hash'] = content_hash(older['version'], older['files'])
+        path.write_text(json.dumps(older))
+        with self.assertRaisesRegex(RuntimeError, 'approved payload'):
+            verify_runtime(destination, existing=True)
+        # An extra file on disk without a manifest entry is still rejected.
+        path.write_text(json.dumps(manifest))
+        (destination / 'extra.py').write_text('extra')
+        with self.assertRaisesRegex(RuntimeError, 'Unexpected runtime entry'):
+            verify_runtime(destination, existing=True)
 
     def test_symlinked_source_is_rejected_before_creating_destination(self):
         path = self.source / 'LICENSE'

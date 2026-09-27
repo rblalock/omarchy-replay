@@ -129,7 +129,7 @@ class TransactionTest(unittest.TestCase):
         (destination / 'runtime-manifest.json').write_text(json.dumps(manifest))
         return manifest
 
-    def verify(self, root):
+    def verify(self, root, existing=False):
         return json.loads((root / 'runtime-manifest.json').read_text())
 
     def run_process(self, command, **kwargs):

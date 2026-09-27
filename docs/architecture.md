@@ -77,7 +77,7 @@ SQLite uses WAL mode and short transactions. Image decode and recognition happen
 
 The shared worker uses Tesseract English data with incremental OCR at original resolution. It compares changes with the previous image, recognizes eligible changed regions and reuses unchanged line results. It falls back to full recognition when reuse is unsuitable. A jump in processing order clears continuity-dependent geometry. The separate exact whole-frame reuse experiment remains opt-in.
 
-OCR text and line geometry commit together. Search uses FTS5's `unicode61` tokenizer. The viewer expands the final token after three characters: `contin` can match `continue`, `continuous` and `continuity`. Other supplied terms must also occur. This is prefix matching; it does not correct arbitrary spelling errors or provide semantic search. The current `search` CLI uses whole-token matching.
+OCR text and line geometry commit together. Search uses FTS5's `unicode61` tokenizer. The viewer expands the final token after three characters: `contin` can match `continue`, `continuous` and `continuity`. Other supplied terms must also occur. This is prefix matching; it does not correct arbitrary spelling errors or provide semantic search. The legacy `search` CLI uses whole-token matching; the `recall` command adds paginated pages, optional time bounds, rank or chronological order, one-moment fetch with stored line geometry and neighbors, meeting search, and range coverage including known gaps. All recall reads use read-only database connections.
 
 The viewer pages results chronologically and puts matches on the timeline. Selecting a result loads its original image. Highlights use stored line boxes, scaled with the image. Matching-line copy uses the search tokenizer and includes each line once. Older history without saved geometry can remain searchable but cannot provide those highlights.
 
@@ -99,7 +99,7 @@ One separate importer process runs at nice level 15 while the integration is ena
 
 The importer validates file ownership and types, rejects symlinks and ambiguous manifests, and pins the archive directory/database identity. Config changes, indexing pause, storage loss, explicit deletion and shutdown stop the child before dependent work proceeds. Shutdown has a bounded terminate/kill path, and parent-death signaling plus the installed unit's control-group cleanup prevent an orphan. Source reads and parsing run outside the capture loop. SQLite writes remain short and can contend with the other archive writers.
 
-Meeting text is stored separately from screen OCR. Viewer filters select **All**, **Screen text** or **Meetings**; a meeting appears once, with its matching transcript lines grouped as passages. Transcript rendering is plain text, including untrusted source content. Meeting matches never produce image OCR highlights. The current CLI `search` still returns screen frames only; dedicated agent retrieval remains planned.
+Meeting text is stored separately from screen OCR. Viewer filters select **All**, **Screen text** or **Meetings**; a meeting appears once, with its matching transcript lines grouped as passages. Transcript rendering is plain text, including untrusted source content. Meeting matches never produce image OCR highlights. The `recall --source meetings|all` command returns the same meeting matches through the CLI, including the stored transcript; it has no time filter yet.
 
 A known recorder-supplied start anchors a meeting on the timeline. Imported recordings and absent start times remain searchable without a marker. **Browse screens** requires an observation within ten seconds of a known start and rejects known gaps; it does not imply sentence-level synchronization. Audio pauses, interruptions and uncertain source dates are not reconstructed.
 
@@ -212,7 +212,7 @@ The opt-in [exclusion scope check](../scripts/exclusion_scope_check.py) verifies
 
 Performance comparisons must report retained observations, indexed coverage, oldest pending age, CPU, memory, disk growth and foreground impact together. Count the coordinator, OCR worker, managed child and optional importer when measuring process cost. Distinguish OCR CPU time from elapsed time that includes pacing. Compare the same images and recognition results when evaluating an optimization.
 
-Current limits include one selected display, local storage, imperfect OCR and sampling gaps. S3-compatible offload, cross-device access, semantic retrieval and a dedicated agent context interface remain roadmap work. Existing CLI search/extraction can supply evidence to a coding agent, but Replay does not execute that agent's tasks.
+Current limits include one selected display, local storage, imperfect OCR and sampling gaps. S3-compatible offload, cross-device access and semantic retrieval remain roadmap work. The `recall` CLI supplies structured evidence (search, moment fetch, meetings, coverage) to a coding agent over read-only connections; an MCP adapter and Replay executing the agent's tasks remain roadmap work.
 
 ## Source map
 

@@ -20,6 +20,7 @@ PAYLOAD = {
     'bin/replay': 0o755,
     'scripts/replay': 0o755,
     'scripts/open_replay.py': 0o644,
+    'scripts/replay_mcp.py': 0o644,
     'scripts/viewer_launch.py': 0o644,
     'scripts/runtime_layout.py': 0o644,
     'scripts/package_runtime.py': 0o644,
@@ -62,11 +63,16 @@ def checked_file(root, relative):
     return current
 
 
-def verify_runtime(root):
+def verify_runtime(root, existing=False):
     """Return a verified manifest, or raise RuntimeError for an invalid runtime.
 
     Hashes detect damage or inconsistent copies; they are not publisher signatures.
     No payload code is executed during verification.
+
+    An already-installed runtime may predate the current PAYLOAD (an upgrade from
+    an older release): existing=True accepts a manifest whose file set is a
+    subset of PAYLOAD, still rejecting unknown paths and checking every listed
+    file's hash and mode. Staging a new payload always requires an exact match.
     """
     root = Path(root).resolve()
     try:
@@ -88,10 +94,15 @@ def verify_runtime(root):
         if manifest['source_dirty'] is not None and type(manifest['source_dirty']) is not bool:
             raise RuntimeError('Invalid source state.')
         files = manifest['files']
-        if not isinstance(files, dict) or set(files) != set(PAYLOAD):
+        if not isinstance(files, dict) or not files:
             raise RuntimeError('Runtime manifest does not match the approved payload.')
-        for relative, expected_mode in PAYLOAD.items():
-            details = files[relative]
+        if existing:
+            if not set(files) <= set(PAYLOAD):
+                raise RuntimeError('Runtime manifest does not match the approved payload.')
+        elif set(files) != set(PAYLOAD):
+            raise RuntimeError('Runtime manifest does not match the approved payload.')
+        for relative, details in files.items():
+            expected_mode = PAYLOAD[relative]
             if not isinstance(details, dict) or set(details) != {'sha256', 'mode'}:
                 raise RuntimeError(f'Invalid manifest entry: {relative}')
             if type(details['mode']) is not int or details['mode'] != expected_mode:
@@ -102,7 +113,7 @@ def verify_runtime(root):
             payload = checked_file(root, relative)
             if stat.S_IMODE(payload.stat().st_mode) != expected_mode or file_hash(payload) != digest:
                 raise RuntimeError(f'Runtime payload differs from its manifest: {relative}')
-        expected_files = set(PAYLOAD) | {MANIFEST_NAME}
+        expected_files = set(files) | {MANIFEST_NAME}
         expected_dirs = {str(parent) for item in expected_files for parent in Path(item).parents if str(parent) != '.'}
         for path in root.rglob('*'):
             relative = str(path.relative_to(root))

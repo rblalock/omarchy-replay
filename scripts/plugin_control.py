@@ -175,7 +175,7 @@ def action(name):
     if runtime is None:
         raise RuntimeError('Set up the native Replay app first.')
     from package_runtime import verify_runtime
-    verify_runtime(runtime)
+    verify_runtime(runtime, existing=True)
     if name in ('open', 'settings'):
         command = [str(runtime / 'scripts/replay'), 'open', '--notify-errors']
         if name == 'settings':

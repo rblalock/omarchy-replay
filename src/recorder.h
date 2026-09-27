@@ -96,6 +96,7 @@ struct TimelineOverview {
 };
 
 enum class SearchMode { Exact, PrefixLastToken };
+enum class SearchOrder { Chronological, Rank };
 
 struct SearchPage {
     QVector<FrameRecord> frames;
@@ -202,13 +203,17 @@ HistoryMaintenanceResult deleteHistoryRange(const QString &directory, qint64 fro
 QJsonObject historyUsage(const QString &directory);
 void recordGap(const QString &directory, qint64 startMs, qint64 endMs, const QString &reason);
 
-QVector<FrameRecord> listFrames(const QString &directory, int limit = 200, int offset = 0);
+QVector<FrameRecord> listFrames(const QString &directory, int limit = 200, int offset = 0,
+                                qint64 sinceMs = 0, qint64 untilMs = 0);
 QVector<FrameRecord> searchFrames(const QString &directory, const QString &query, int limit = 100);
 // Chronological pages and bounded markers cover the complete matching history.
 // Prefix mode expands only the final token when it has at least three characters.
+// A nonzero sinceMs/untilMs bounds the page by capture time; rank order pages
+// by search relevance. Anchor resolution requires chronological order.
 SearchPage searchFramePage(const QString &directory, const QString &query, int limit = 100,
                           qint64 offset = 0, SearchMode mode = SearchMode::Exact, int timelineLimit = 1000,
-                          qint64 anchorFrameId = 0);
+                          qint64 anchorFrameId = 0, qint64 sinceMs = 0, qint64 untilMs = 0,
+                          SearchOrder order = SearchOrder::Chronological);
 std::optional<qint64> searchFrameOffsetNearTimestamp(const QString &directory, const QString &query,
                                                    qint64 timestampMs, SearchMode mode = SearchMode::Exact);
 std::optional<FrameRecord> adjacentFrame(const QString &directory, qint64 frameId, int direction);
@@ -223,6 +228,11 @@ TextMatches matchingTextLines(const QString &directory, qint64 frameId, const QS
 QVector<QRect> matchingTextRects(const QString &directory, qint64 frameId, const QString &query,
                                SearchMode mode = SearchMode::Exact);
 QJsonObject indexingStatus(const QString &directory);
+// Read-only recall helpers for the structured CLI. Time bounds are inclusive
+// epoch milliseconds; zero disables a bound.
+QJsonArray frameTextLines(const QString &directory, qint64 frameId); // Stored OCR lines with original-image boxes.
+QVector<FrameRecord> framesNear(const QString &directory, qint64 frameId, int contextSeconds);
+QJsonObject rangeCoverage(const QString &directory, qint64 sinceMs, qint64 untilMs);
 // Reuse one read-only connection for repeated status polls. No statement or
 // read transaction survives status(), so other writers can commit/checkpoint.
 // Keep the reader on its owning thread.
