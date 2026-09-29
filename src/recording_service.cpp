@@ -168,7 +168,7 @@ public:
     QJsonObject progress, usage, workerReceipt, deletion, storageForecastResult;
     EnvironmentSnapshot desktop;
     QString intent = "stopped", state = "stopped", reason = "Recording is stopped.", configError, indexError;
-    QString maskToken, maskInstance, captureInstance, captureDisplay;
+    QString maskToken, maskInstance, captureInstance, captureDisplay, captureOutput;
     quint64 maskConfigGeneration = 0;
     bool exclusionsPending = false;
     QString exclusionError;
@@ -184,6 +184,8 @@ public:
     qint64 indexLastWork = 0, previousReady = 0, nextDesktopStatus = 0;
     quint64 controlRevision = 0;
     qint64 gapStart = 0, lastRetained = 0, retainedThisRun = 0, attempts = 0;
+    // Display of the last retained capture; cleared whenever recording stops.
+    QString recordingOutput, lastCaptureTarget;
     QString gapReason;
     qint64 configModified = -1, configSize = -1;
     qint64 nextForecast = 0;
@@ -212,7 +214,8 @@ public:
 
     QJsonObject forecastCaptureSettings() const {
         return {{"directory", paths.historyDirectory}, {"output", document.config.output},
-            {"output_identity", document.config.outputIdentity}, {"interval_seconds", document.config.intervalSeconds}};
+            {"output_identity", document.config.outputIdentity}, {"display_mode", document.config.displayMode},
+            {"interval_seconds", document.config.intervalSeconds}};
     }
 
     explicit Coordinator(bool test, const QString &syntheticEnvironment) : synthetic(test) {
@@ -344,12 +347,12 @@ public:
             {"forecast_capture", forecastCaptureSettings()}, {"forecast_sample_after_ms", forecastSampleAfter}});
     }
     void closeCapture() {
-        capture.reset();
+        capture.reset(); captureOutput.clear();
         if (recorder) { try { recorder->finish(); } catch (...) {} recorder.reset(); }
     }
     void transition(const QString &next, const QString &detail) {
         if (next != "recording") {
-            capture.reset();
+            capture.reset(); recordingOutput.clear();
             if (recorder) recorder->breakContinuity();
             nextCapture = 0;
             if (gapReason != next) {
@@ -503,7 +506,8 @@ public:
             }
             const bool changedHistory = replayHistoryDirectory(next.config) != paths.historyDirectory;
             const bool changedCapture = changedHistory || next.config.output != document.config.output ||
-                next.config.outputIdentity != document.config.outputIdentity || next.config.intervalSeconds != document.config.intervalSeconds;
+                next.config.outputIdentity != document.config.outputIdentity || next.config.displayMode != document.config.displayMode ||
+                next.config.intervalSeconds != document.config.intervalSeconds;
             if (changedHistory && !deletion.isEmpty()) fail("Wait for the current history deletion before changing its folder");
             rememberConfig(next.original);
             stopMeetings(); stopIndex(); closeCapture();
@@ -568,6 +572,7 @@ public:
         const auto &c = document.config;
         QJsonObject result{{"available", true}, {"running", true}, {"pid", qint64(getpid())}, {"intent", intent},
             {"state", state}, {"reason", reason}, {"config_error", configError}, {"output", c.output},
+            {"display_mode", c.displayMode}, {"recording_output", recordingOutput},
             {"exclusions_pending", exclusionsPending}, {"exclusions_error", exclusionError},
             {"progress", progress}, {"usage", usage}, {"retention_days", c.retentionDays}, {"max_disk_mib", c.maxDiskMiB},
             {"min_free_mib", c.minFreeMiB}, {"interval_seconds", c.intervalSeconds},
@@ -596,6 +601,9 @@ public:
         meetings["worker_pid"] = qint64(meetingWorker.processId());
         meetings["error"] = meetingError;
         result["meetings"] = meetings;
+        // Synthetic runs never bind a Wayland connection; the display each
+        // capture attempt targeted is the only observable for focus tests.
+        if (synthetic) result["last_capture_target"] = lastCaptureTarget;
         return result;
     }
     void requestExclusions() {
@@ -684,7 +692,8 @@ public:
         }
         ++controlRevision;
         if (action == "start" || action == "resume") {
-            if (document.config.output.isEmpty() && !synthetic) fail("Choose a display in Replay settings before recording");
+            if (document.config.displayMode == "fixed" && document.config.output.isEmpty() && !synthetic)
+                fail("Choose a display in Replay settings before recording");
             intent = "running"; nextCapture = 0; captureRetryCount = 0;
         } else if (action == "pause") intent = "paused";
         else if (action == "stop") intent = "stopped";
@@ -754,7 +763,8 @@ public:
         if (intent != "running" || shuttingDown || stopRequested()) return;
         if (!desktop.captureAllowed) { transition(desktop.reason, desktop.detail); nextCapture = time + 1000; return; }
         if (!deletion.isEmpty()) { transition("deleting", "Removing the selected history interval."); return; }
-        if (!synthetic && configError.isEmpty() && document.config.outputIdentity.isEmpty() && !desktop.outputIdentity.isEmpty()) {
+        if (!synthetic && configError.isEmpty() && document.config.displayMode == "fixed" &&
+            document.config.outputIdentity.isEmpty() && !desktop.outputIdentity.isEmpty()) {
             auto pinned = document.config; pinned.outputIdentity = desktop.outputIdentity;
             saveReplayConfig(pinned, document.original); document = loadReplayConfig();
             rememberConfig(document.original);
@@ -769,20 +779,32 @@ public:
             const quint64 revision = controlRevision;
             if (!recorder) recorder = std::make_unique<Recorder>(recordingOptions(paths, document.config));
             QImage image;
+            // Focus mode can move the selected display between ticks. Rebind the
+            // source and break continuity so one segment never mixes displays.
+            lastCaptureTarget = desktop.selectedOutput;
             if (synthetic) image = fixtureFrame(int(attempts % fixtureFrameCount()), QSize(960, 540));
             else {
-                if (captureInstance != desktop.compositorInstance || captureDisplay != desktop.waylandDisplay) capture.reset();
+                if (captureInstance != desktop.compositorInstance || captureDisplay != desktop.waylandDisplay ||
+                    captureOutput != desktop.selectedOutput) {
+                    capture.reset();
+                    if (recorder) recorder->breakContinuity();
+                }
                 if (!capture) {
-                    if (desktop.waylandDisplay.isEmpty()) fail("Current compositor display socket is unavailable");
-                    capture = std::make_unique<WaylandCapture>(document.config.output, desktop.waylandDisplay);
+                    if (desktop.waylandDisplay.isEmpty() || desktop.selectedOutput.isEmpty())
+                        fail("Current compositor display socket is unavailable");
+                    capture = std::make_unique<WaylandCapture>(desktop.selectedOutput, desktop.waylandDisplay);
                     captureInstance = desktop.compositorInstance; captureDisplay = desktop.waylandDisplay;
+                    captureOutput = desktop.selectedOutput;
                 }
                 image = capture->capture(2000);
             }
             QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
             if (revision != controlRevision || intent != "running" || shuttingDown || stopRequested() || !deletion.isEmpty()) return;
             const auto after = environment ? environment->snapshot() : desktop;
-            if (!after.captureAllowed || after.generation != desktop.generation) {
+            // The retained frame must still come from the display this tick
+            // selected; a focus move between the snapshots discards it even when
+            // the safety generation did not change.
+            if (!after.captureAllowed || after.generation != desktop.generation || after.selectedOutput != desktop.selectedOutput) {
                 desktop = after; transition(after.captureAllowed ? "desktop-changed" : after.reason,
                     after.captureAllowed ? "Desktop changed during capture; waiting for the next moment." : after.detail);
                 // Discard uncertain pixels without spinning through new capture
@@ -796,7 +818,9 @@ public:
             checkStorage();
             const qint64 capturedAt = now();
             const auto added = recorder->addFrame(image, capturedAt);
-            if (added.stored || added.duplicate) { ++retainedThisRun; lastRetained = capturedAt; }
+            if (added.stored || added.duplicate) {
+                ++retainedThisRun; lastRetained = capturedAt; recordingOutput = desktop.selectedOutput;
+            }
             captureRetryCount = 0;
             transition("recording", "Recording the selected display.");
             // Missed ticks are a gap, never a burst of captures after wake.
@@ -974,7 +998,10 @@ int recordingCommand(const QStringList &arguments, const std::function<bool()> &
             {"config_error", config.configError}, {"using_last_valid_config", config.usingLastValidConfig}};
     } else if (action == "init") {
         auto config = loadReplayConfig();
-        if (parser.isSet("output")) { config.config.output = parser.value("output"); config.config.outputIdentity.clear(); }
+        if (parser.isSet("output")) {
+            config.config.output = parser.value("output"); config.config.outputIdentity.clear();
+            config.config.displayMode = "fixed";
+        }
         if (!config.exists || parser.isSet("output")) saveReplayConfig(config.config, config.original);
         auto paths = replayPaths(); paths.historyDirectory = replayHistoryDirectory(config.config);
         checkStorageLocation(paths, config.config, true);
