@@ -10,10 +10,11 @@
 namespace {
 void require(bool condition, const char *message) { if (!condition) throw std::runtime_error(message); }
 
-QJsonObject monitor(const QString &name = "TEST-1", int x = 0) {
+QJsonObject monitor(const QString &name = "TEST-1", int x = 0, bool focused = false) {
     return {{"id", x == 0 ? 1 : 2}, {"name", name}, {"make", "Synthetic"}, {"model", "Fixture"}, {"serial", name},
             {"description", "Synthetic fixture display"}, {"width", 1920}, {"height", 1080}, {"scale", 1.0},
-            {"transform", 0}, {"x", x}, {"y", 0}, {"disabled", false}, {"dpmsStatus", true}, {"mirrorOf", "none"}};
+            {"transform", 0}, {"x", x}, {"y", 0}, {"disabled", false}, {"dpmsStatus", true}, {"mirrorOf", "none"},
+            {"focused", focused}};
 }
 QJsonObject window(QString app = "fixture.editor", int x = 20) {
     return {{"address", "0x1234"}, {"class", app}, {"initialClass", app}, {"title", "Synthetic invoice"},
@@ -104,6 +105,73 @@ void outputs() {
     const auto restart = environment.snapshot();
     require(restart.captureAllowed && restart.generation != before.generation, "Compositor reconnect did not invalidate capture");
     std::cout << "PASS pinned output, reconnect, replacement, DPMS, mirror and compositor generation\n";
+}
+
+void focusedOutput() {
+    // Focused mode has no configured display; selection comes from the compositor.
+    auto observed = ready();
+    replay::RecordingEnvironment environment([&] { return observed; });
+    auto config = options(); config.followFocus = true; config.output.clear();
+    require(replay::RecordingEnvironment::validateOptions(config).isEmpty(), "Focused mode required a configured display");
+    auto fixedOptions = options(); fixedOptions.output.clear();
+    require(!replay::RecordingEnvironment::validateOptions(fixedOptions).isEmpty(), "Fixed mode accepted a missing display selection");
+    environment.configure(config);
+
+    // R5: zero focused displays block; nothing is substituted.
+    require(environment.snapshot().reason == "focus_unknown", "An unfocused desktop allowed focused capture");
+    auto first = monitor();                // TEST-1, x = 0
+    auto second = monitor("TEST-2", 1920); // TEST-2, x = 1920
+
+    // R3: exactly one focused display is selected, with its own bounds.
+    first["focused"] = true; observed.monitors = {first, second};
+    const auto selected = environment.snapshot();
+    require(selected.captureAllowed && selected.selectedOutput == "TEST-1", "The focused display was not selected");
+    require(selected.outputIdentity.isEmpty(), "Focused mode pinned a hardware identity");
+
+    // R6: an excluded app on the unfocused display does not pause the focused
+    // capture, and the same app pauses once its own display has focus.
+    observed.windows = {window("com.onepassword.OnePassword", 2000)};
+    require(environment.snapshot().captureAllowed, "An excluded window on the unfocused display paused the capture");
+    first["focused"] = false; second["focused"] = true; observed.monitors = {first, second};
+    const auto switched = environment.snapshot();
+    require(!switched.captureAllowed && switched.reason == "excluded_window" && switched.selectedOutput == "TEST-2",
+            "The exclusion did not follow focus to the other display");
+    first["focused"] = true; second["focused"] = false; observed.monitors = {first, second};
+    require(environment.snapshot().captureAllowed, "Restoring focus did not restore capture");
+
+    // R5: two focused displays are as unusable as none.
+    second["focused"] = true; observed.monitors = {first, second};
+    require(environment.snapshot().reason == "focus_unknown", "Two focused displays allowed focused capture");
+
+    // R7: a focused display that is off or mirrored blocks; the other display
+    // is never captured instead.
+    second["focused"] = false; first["dpmsStatus"] = false; observed.monitors = {first, second};
+    const auto off = environment.snapshot();
+    require(!off.captureAllowed && off.reason == "output_off" && off.selectedOutput == "TEST-1",
+            "A focused display that is off did not block capture");
+    first["dpmsStatus"] = true; first["mirrorOf"] = "2"; observed.monitors = {first, second};
+    require(environment.snapshot().reason == "output_mirrored", "A focused mirrored display did not block capture");
+
+    // Focused mode never pins a hardware identity: a replacement device on the
+    // focused display stays eligible.
+    first["mirrorOf"] = "none"; first["serial"] = "replacement"; observed.monitors = {first, second};
+    require(environment.snapshot().captureAllowed, "A replaced device blocked the focused display");
+
+    // A configured identity is echoed but never compared in focused mode.
+    auto pinned = options(); pinned.followFocus = true; pinned.outputIdentity = QString(64, 'b');
+    environment.configure(pinned);
+    const auto echoed = environment.snapshot();
+    require(echoed.captureAllowed && echoed.outputIdentity == QString(64, 'b'),
+            "Focused mode compared or replaced the configured identity");
+
+    // R10: fixed mode still selects the configured display and pins its identity.
+    auto fixedObserved = ready();
+    replay::RecordingEnvironment fixed([&] { return fixedObserved; });
+    fixed.configure(options());
+    const auto fixedReady = fixed.snapshot();
+    require(fixedReady.captureAllowed && fixedReady.selectedOutput == "TEST-1" && !fixedReady.outputIdentity.isEmpty(),
+            "Fixed mode lost its configured display selection or identity pin");
+    std::cout << "PASS focused display selection, focus_unknown, focus-following exclusions, blocked focus and unpinned identity\n";
 }
 
 void exclusions() {
@@ -388,7 +456,7 @@ int main(int argc, char **argv) {
             return result.reason == "ready" || result.reason == "excluded_window" || result.reason == "locked" ||
                 result.reason == "exclusions_unverified" ? 0 : 1;
         }
-        lifecycle(); unknowns(); outputs(); exclusions(); presetDefaults(); skipApps(); screensaver(); safetyGeneration(); diagnostics(); events();
+        lifecycle(); unknowns(); outputs(); focusedOutput(); exclusions(); presetDefaults(); skipApps(); screensaver(); safetyGeneration(); diagnostics(); events();
     } catch (const std::exception &error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }
     return 0;
 }

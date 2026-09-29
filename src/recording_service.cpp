@@ -100,6 +100,7 @@ RecorderOptions recordingOptions(const ReplayPaths &paths, const ReplayConfig &c
 EnvironmentOptions environmentOptions(const ReplayConfig &config) {
     EnvironmentOptions options;
     options.output = config.output; options.outputIdentity = config.outputIdentity;
+    options.followFocus = config.displayMode == "focused";
     options.excludedApps = config.excludedApps; options.skippedApps = config.skippedApps;
     options.excludedWindows = config.excludedWindows;
     return options;
@@ -253,6 +254,18 @@ public:
                 observed.compositorInstance = "synthetic-session"; observed.eventGeneration = input.value("generation").toInteger();
                 if (input.value("unstable").toBool()) observed.eventGeneration = ++reads;
                 observed.monitors = input.value("monitors").toArray(); observed.windows = input.value("windows").toArray();
+                if (input.value("alternate_focus").toBool()) {
+                    // Flip which display carries focus on every read, so a caller
+                    // can move focus between two snapshots without a generation
+                    // change. Modelled on `unstable`, which advances `reads`.
+                    QJsonArray monitors;
+                    for (qsizetype index = 0; index < observed.monitors.size(); ++index) {
+                        auto monitor = observed.monitors[index].toObject();
+                        monitor["focused"] = qint64(index) == qint64(reads % 2);
+                        monitors.append(monitor);
+                    }
+                    observed.monitors = monitors; ++reads;
+                }
                 observed.exclusionsVerified = true;
                 return observed;
             });

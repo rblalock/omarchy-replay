@@ -492,7 +492,8 @@ struct RecordingEnvironment::Impl {
 QJsonObject EnvironmentSnapshot::json() const {
     return {{"capture_allowed", captureAllowed}, {"reason", reason}, {"detail", detail},
             {"generation", qint64(generation)}, {"config_generation", qint64(configGeneration)},
-            {"output_identity", outputIdentity}, {"compositor_instance", compositorInstance},
+            {"output_identity", outputIdentity}, {"selected_output", selectedOutput},
+            {"compositor_instance", compositorInstance},
             {"wayland_display", waylandDisplay},
             {"visible_windows", visibleWindows}, {"excluded_apps", QJsonArray::fromStringList(excludedApps)}};
 }
@@ -502,7 +503,10 @@ RecordingEnvironment::RecordingEnvironment(Source source, QObject *parent) : QOb
 RecordingEnvironment::~RecordingEnvironment() = default;
 
 QString RecordingEnvironment::validateOptions(const EnvironmentOptions &options) {
-    if (options.output.isEmpty() || options.output.size() > 256 || options.output.contains(QRegularExpression("[\\x00-\\x20/\\\\]")))
+    // Focus mode is given its display by the compositor, so the configured
+    // output is preserved but ignored and may be empty.
+    if (!options.followFocus &&
+        (options.output.isEmpty() || options.output.size() > 256 || options.output.contains(QRegularExpression("[\\x00-\\x20/\\\\]"))))
         return "Select one named display output.";
     if (options.excludedApps.size() + options.skippedApps.size() > 64 || options.excludedWindows.size() > 64)
         return "Too many exclusion rules.";
@@ -606,9 +610,18 @@ EnvironmentSnapshot RecordingEnvironment::snapshot() {
     for (const auto &entry : observed.monitors) {
         if (!entry.isObject()) { block("environment_unknown", "Display metadata is incomplete."); return result; }
         const auto monitor = entry.toObject();
-        if (monitor.value("name").toString() == d->options.output) { selected = monitor; ++found; }
+        // Focus mode selects whatever the compositor marks focused. Exactly one
+        // display must qualify; another display is never substituted.
+        const bool match = d->options.followFocus ? boolField(monitor, "focused") && monitor.value("focused").toBool()
+                                                  : monitor.value("name").toString() == d->options.output;
+        if (match) { selected = monitor; ++found; }
     }
-    if (found != 1) { block("output_unavailable", "Waiting for the selected display; another display will not be substituted."); return result; }
+    if (found != 1) {
+        if (d->options.followFocus) block("focus_unknown", "Waiting for exactly one focused display.");
+        else block("output_unavailable", "Waiting for the selected display; another display will not be substituted.");
+        return result;
+    }
+    result.selectedOutput = selected.value("name").toString();
     if (!boolField(selected, "disabled") || !boolField(selected, "dpmsStatus") || !integerField(selected, "id") ||
         !integerField(selected, "x") || !integerField(selected, "y") || !integerField(selected, "width") || !integerField(selected, "height") ||
         !selected.value("scale").isDouble() || selected.value("scale").toDouble() <= 0) {
@@ -616,9 +629,13 @@ EnvironmentSnapshot RecordingEnvironment::snapshot() {
     }
     if (selected.value("disabled").toBool() || !selected.value("dpmsStatus").toBool()) { block("output_off", "Waiting for the selected display to turn on."); return result; }
     if (selected.value("mirrorOf").toString("none") != "none") { block("output_mirrored", "Mirrored outputs need explicit capture support."); return result; }
-    const QString identity = monitorIdentity(selected);
-    if (!d->pinnedIdentity.isEmpty() && identity != d->pinnedIdentity) { block("output_identity_changed", "The device on this output changed; select it explicitly before recording."); return result; }
-    if (d->pinnedIdentity.isEmpty()) d->pinnedIdentity = identity;
+    // Focus mode never pins or compares a hardware identity: every display is
+    // eligible by design, so the configured identity is echoed but ignored.
+    if (!d->options.followFocus) {
+        const QString identity = monitorIdentity(selected);
+        if (!d->pinnedIdentity.isEmpty() && identity != d->pinnedIdentity) { block("output_identity_changed", "The device on this output changed; select it explicitly before recording."); return result; }
+        if (d->pinnedIdentity.isEmpty()) d->pinnedIdentity = identity;
+    }
     result.outputIdentity = d->pinnedIdentity;
     const double scale = selected.value("scale").toDouble();
     double width = selected.value("width").toDouble() / scale, height = selected.value("height").toDouble() / scale;
