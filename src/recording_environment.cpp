@@ -622,9 +622,13 @@ EnvironmentSnapshot RecordingEnvironment::snapshot() {
         return result;
     }
     result.selectedOutput = selected.value("name").toString();
+    // Focus mode selects whatever the compositor marks focused, including a
+    // monitor it reports without a connector name; the configured name is only
+    // matched in fixed mode. Capture needs a name, so an unnamed selection is
+    // incomplete metadata here, not a failure of the compositor socket later.
     if (!boolField(selected, "disabled") || !boolField(selected, "dpmsStatus") || !integerField(selected, "id") ||
         !integerField(selected, "x") || !integerField(selected, "y") || !integerField(selected, "width") || !integerField(selected, "height") ||
-        !selected.value("scale").isDouble() || selected.value("scale").toDouble() <= 0) {
+        !selected.value("scale").isDouble() || selected.value("scale").toDouble() <= 0 || result.selectedOutput.isEmpty()) {
         block("environment_unknown", "Selected display metadata is incomplete."); return result;
     }
     if (selected.value("disabled").toBool() || !selected.value("dpmsStatus").toBool()) { block("output_off", "Waiting for the selected display to turn on."); return result; }

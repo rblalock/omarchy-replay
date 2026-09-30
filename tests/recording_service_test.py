@@ -352,7 +352,10 @@ def main():
                     'SELECT timestamp_ms FROM frames WHERE timestamp_ms >= ? ORDER BY timestamp_ms, id', (watermark,))]
             assert stamps, 'rapid focus changes stopped retaining frames entirely'
             gaps = [later - earlier for earlier, later in zip(stamps, stamps[1:])]
-            assert all(gap >= 450 for gap in gaps), 'rapid focus changes retained frames faster than the interval'
+            # Floor at the configured interval (0.5 s here), not a loose margin:
+            # the cadence math keeps retained frames at least one interval apart,
+            # so a regression retaining a frame between ticks must fail here.
+            assert all(gap >= 500 for gap in gaps), 'rapid focus changes retained frames faster than the configured interval'
             # A display-mode change is a capture-setting change for the storage
             # forecast, and an explicit output selection leaves focused mode.
             call('pause')

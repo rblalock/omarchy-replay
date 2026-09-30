@@ -152,6 +152,15 @@ void focusedOutput() {
     first["dpmsStatus"] = true; first["mirrorOf"] = "2"; observed.monitors = {first, second};
     require(environment.snapshot().reason == "output_mirrored", "A focused mirrored display did not block capture");
 
+    // A focused display the compositor cannot name is a selection problem, not a
+    // capture one: it is rejected as incomplete metadata instead of failing later
+    // at the Wayland bind with a socket message.
+    first["mirrorOf"] = "none"; first["name"] = ""; observed.monitors = {first, second};
+    const auto unnamed = environment.snapshot();
+    require(!unnamed.captureAllowed && unnamed.selectedOutput.isEmpty() && unnamed.reason == "environment_unknown" &&
+            unnamed.detail.contains("incomplete"), "A nameless focused display was not reported as a selection problem");
+    first["name"] = "TEST-1";
+
     // Focused mode never pins a hardware identity: a replacement device on the
     // focused display stays eligible.
     first["mirrorOf"] = "none"; first["serial"] = "replacement"; observed.monitors = {first, second};
