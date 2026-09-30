@@ -4,7 +4,7 @@
 
 [Watch the 15-second launch video on YouTube](https://youtu.be/F9FaIxpPdvo)
 
-Find things you saw on your screen. Omarchy Replay records one selected display, recognizes its text locally, and gives you a searchable timeline of the original images.
+Find things you saw on your screen. Omarchy Replay records one selected display — or, in **Focused display** mode, whichever display has focus at each capture — recognizes its text locally, and gives you a searchable timeline of the original images.
 
 - Search visible text, including partial words as you type.
 - Optionally search completed Meeting Recorder transcripts, grouped by meeting.
@@ -116,7 +116,7 @@ Settings copy prompt, or inspect omarchy-replay.service's ExecStart. Do not assu
 that replay is on PATH. Read the config and run that executable with daemon paths
 and daemon status before editing.
 
-TOML options: [recording] output, output_identity, interval_seconds;
+TOML options: [recording] output, output_identity, display_mode, interval_seconds;
 [storage] directory, retention_days, max_disk_mib, min_free_mib;
 [indexing] active_cpu_percent, idle_cpu_percent, request_cpu_percent,
 pressure_cpu_percent, cpu_ceiling_percent, idle_seconds, ocr_languages;
