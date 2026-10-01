@@ -14,7 +14,8 @@ QString configurationAgentPrompt(AgentPromptTopic topic, const AgentPromptContex
         "Help me configure the installed Omarchy Replay plugin. A local source checkout is not required. "
         "Use the installation paths, commands and TOML reference below. Full source is available at "
         "https://github.com/rblalock/omarchy-replay if more detail is needed; the installed version may differ from the remote main branch.\n\n"
-        "Replay samples one selected display, stores original images locally, and indexes their text with local OCR. "
+        "Replay samples one selected display, or whichever display has focus when the TOML option display_mode is "
+        "\"focused\", stores original images locally, and indexes their text with local OCR. "
         "Capture and indexing are independent. Pending OCR keeps its original image; storage limits can pause capture. "
         "Closing the viewer does not stop background work. Lock, sleep, missing display and excluded windows can block capture; "
         "a temporary block clears only if saved recording intent permits it.\n\n"
@@ -39,6 +40,7 @@ QString configurationAgentPrompt(AgentPromptTopic topic, const AgentPromptContex
 [recording]
 output = "" # Exact display connector from `outputs`; select before capture.
 output_identity = "" # Pinned by Replay. Clear only when deliberately changing displays.
+display_mode = "fixed" # or "focused": record whichever display has focus at each capture; output is then ignored.
 interval_seconds = 5.0 # 0.25–60 seconds between captures.
 
 [storage]

@@ -144,6 +144,8 @@ void validateReplayConfig(const ReplayConfig& config) {
         invalid("storage directory must be an absolute folder path without a trailing slash, . or ..");
     shortText(config.output, 256, "output");
     shortText(config.outputIdentity, 1024, "output_identity");
+    if (config.displayMode != "fixed" && config.displayMode != "focused")
+        invalid("display_mode must be fixed or focused");
     shortText(config.preferredAgent, 256, "preferred agent");
     bounded(config.intervalSeconds, .25, 60, "interval_seconds");
     bounded(config.retentionDays, 1, 3650, "retention_days");
@@ -187,6 +189,7 @@ ReplayConfigDocument loadReplayConfig(const QString& path) {
     const auto* capture = section(table, "recording");
     read(capture, "output", config.output);
     read(capture, "output_identity", config.outputIdentity);
+    read(capture, "display_mode", config.displayMode);
     read(capture, "interval_seconds", config.intervalSeconds);
     const auto* storage = section(table, "storage");
     read(storage, "directory", config.storageDirectory);
@@ -249,6 +252,8 @@ ReplayConfigResolution resolveReplayConfig() {
 void saveReplayConfig(const ReplayConfig& config, const QByteArray& expectedOriginal, const QString& path) {
     validateReplayConfig(config);
     auto table = parse(expectedOriginal);
+    const auto* originalCapture = section(table, "recording");
+    const bool hadDisplayMode = originalCapture && originalCapture->contains("display_mode");
     bool previouslyEnabled = false;
     read(section(table, "meetings"), "enabled", previouslyEnabled);
     if (config.meetingsEnabled && !previouslyEnabled && !meetingRecorderAvailable())
@@ -256,6 +261,9 @@ void saveReplayConfig(const ReplayConfig& config, const QByteArray& expectedOrig
     auto& capture = writableSection(table, "recording");
     capture.insert_or_assign("output", config.output.toStdString());
     capture.insert_or_assign("output_identity", config.outputIdentity.toStdString());
+    // Existing files that never had the key stay byte-stable at the default.
+    if (config.displayMode != "fixed" || hadDisplayMode)
+        capture.insert_or_assign("display_mode", config.displayMode.toStdString());
     capture.insert_or_assign("interval_seconds", config.intervalSeconds);
     auto& storage = writableSection(table, "storage");
     storage.insert_or_assign("directory", config.storageDirectory.toStdString());

@@ -136,6 +136,56 @@ private slots:
         QVERIFY(replay::loadReplayConfig(path).config.skippedApps.isEmpty());
     }
 
+    void displayModeValidatesAndRoundTrips() {
+        QTemporaryDir directory;
+        const QString path = directory.filePath("config.toml");
+        write(path, "[recording]\noutput = 'DP-1'\noutput_identity = 'synthetic serial'\ninterval_seconds = 2.5\n");
+        const auto original = replay::loadReplayConfig(path);
+        QCOMPARE(original.config.displayMode, "fixed");
+
+        write(path, "[recording]\ndisplay_mode = 'mirrored'\n");
+        bool namedKey = false;
+        try { replay::loadReplayConfig(path); }
+        catch (const std::runtime_error& error) { namedKey = QString::fromUtf8(error.what()).contains("display_mode"); }
+        QVERIFY2(namedKey, "an invalid display_mode must be rejected and named");
+        write(path, original.original);
+
+        auto focused = original.config;
+        focused.displayMode = "focused";
+        replay::saveReplayConfig(focused, original.original, path);
+        auto reloaded = replay::loadReplayConfig(path);
+        QCOMPARE(reloaded.config.displayMode, "focused");
+        QCOMPARE(reloaded.config.output, "DP-1");
+        QCOMPARE(reloaded.config.outputIdentity, "synthetic serial");
+        QVERIFY(contents(path).contains("display_mode"));
+
+        reloaded.config.displayMode = "fixed";
+        replay::saveReplayConfig(reloaded.config, reloaded.original, path);
+        const auto back = replay::loadReplayConfig(path);
+        QCOMPARE(back.config.displayMode, "fixed");
+        QCOMPARE(back.config.output, "DP-1");
+        QCOMPARE(back.config.outputIdentity, "synthetic serial");
+        QVERIFY(contents(path).contains("display_mode"));
+    }
+
+    void displayModeIsWrittenOnlyWhenNeeded() {
+        QTemporaryDir directory;
+        const QString path = directory.filePath("config.toml");
+        write(path, "[recording]\noutput = 'DP-1'\ninterval_seconds = 2.5\n");
+        const auto document = replay::loadReplayConfig(path);
+        QCOMPARE(document.config.displayMode, "fixed");
+        replay::saveReplayConfig(document.config, document.original, path);
+        QVERIFY(!contents(path).contains("display_mode"));
+
+        write(path, "[recording]\noutput = 'DP-1'\ndisplay_mode = 'focused'\n");
+        auto existing = replay::loadReplayConfig(path);
+        QCOMPARE(existing.config.displayMode, "focused");
+        existing.config.displayMode = "fixed";
+        replay::saveReplayConfig(existing.config, existing.original, path);
+        QCOMPARE(replay::loadReplayConfig(path).config.displayMode, "fixed");
+        QVERIFY(contents(path).contains("display_mode"));
+    }
+
     void realTomlAndUnknownValuesSurviveSave() {
         QTemporaryDir directory;
         const QString path = directory.filePath("config.toml");

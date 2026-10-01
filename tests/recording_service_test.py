@@ -290,6 +290,73 @@ def main():
             call('index-resume')
             eventually(lambda: status()['progress'].get('pending') == 0, 30)
             assert status()['progress'].get('failed') == 0
+            # Focused mode: the service starts without a configured output and
+            # records whichever display the environment selects for each tick.
+            second_monitor = dict(monitor, id=2, name='TEST-2', serial='TEST-2',
+                                  description='Synthetic second display', x=1920, width=1920, height=1200)
+
+            def focus_desktop(first_focused=True, **fields):
+                desktop(monitors=[dict(monitor, focused=first_focused),
+                                  dict(second_monitor, focused=not first_focused)], **fields)
+
+            call('pause')
+            config.write_text(valid_config.replace('output="TEST-1"', 'display_mode="focused"')); call('reload')
+            focus_desktop()
+            retained = count(); call('start')
+            eventually(lambda: count() > retained)
+            focused = status()
+            assert focused['display_mode'] == 'focused', 'status lost the configured display mode'
+            assert focused['output'] == '' and focused['last_capture_target'] == 'TEST-1', 'focused mode without a configured display did not record the focused display'
+            assert focused['recording_output'] == 'TEST-1'
+            call('pause')
+            assert status()['recording_output'] == '', 'a non-recording state kept its last capture display'
+            # R4: a focus move before the next tick moves the capture target.
+            config.write_text(valid_config.replace('interval_seconds=0.5', 'display_mode="focused"\ninterval_seconds=0.5')); call('reload')
+            focus_desktop(); retained = count(); call('start')
+            eventually(lambda: count() > retained)
+            focus_desktop(False)
+            eventually(lambda: status()['recording_output'] == 'TEST-2')
+            assert status()['last_capture_target'] == 'TEST-2', 'the capture target did not follow focus'
+            assert status()['output'] == 'TEST-1', 'a focus move changed the configured display'
+            # R5: zero focused displays block capture without substitution.
+            desktop(monitors=[dict(monitor, focused=False), dict(second_monitor, focused=False)])
+            eventually(lambda: status()['state'] == 'focus_unknown')
+            retained = count(); time.sleep(.8)
+            assert count() == retained and status()['recording_output'] == '', 'focus_unknown retained a frame or kept a capture display'
+            # R8: a focus move between the pre- and post-capture snapshots
+            # discards the frame even without a generation change.
+            desktop(alternate_focus=True, monitors=[dict(monitor, focused=True), dict(second_monitor, focused=False)])
+            eventually(lambda: status()['state'] == 'desktop-changed')
+            retained = count(); time.sleep(.8)
+            assert count() == retained, 'a focus move between snapshots retained a frame'
+            # R9: focus events never schedule captures; at most one frame is
+            # retained per configured interval.
+            focus_desktop(); eventually(lambda: count() > retained)
+            watermark = int(time.time() * 1000); flipped = False
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                focus_desktop(flipped); flipped = not flipped; time.sleep(.2)
+            time.sleep(.7)
+            with sqlite3.connect(history / 'index.sqlite') as db:
+                stamps = [row[0] for row in db.execute(
+                    'SELECT timestamp_ms FROM frames WHERE timestamp_ms >= ? ORDER BY timestamp_ms, id', (watermark,))]
+            assert stamps, 'rapid focus changes stopped retaining frames entirely'
+            gaps = [later - earlier for earlier, later in zip(stamps, stamps[1:])]
+            # Floor at the configured interval (0.5 s here), not a loose margin:
+            # the cadence math keeps retained frames at least one interval apart,
+            # so a regression retaining a frame between ticks must fail here.
+            assert all(gap >= 500 for gap in gaps), 'rapid focus changes retained frames faster than the configured interval'
+            # A display-mode change is a capture-setting change for the storage
+            # forecast, and an explicit output selection leaves focused mode.
+            call('pause')
+            state_file = root / 'state/omarchy-replay/recording.json'
+            boundary = json.loads(state_file.read_text())['forecast_sample_after_ms']
+            config.write_text(valid_config); call('reload')
+            assert json.loads(state_file.read_text())['forecast_sample_after_ms'] > boundary, 'a display-mode change did not reset the storage forecast'
+            config.write_text(valid_config.replace('interval_seconds=0.5', 'display_mode="focused"\ninterval_seconds=0.5'))
+            call('init', '--output', 'TEST-1')
+            assert call('reload')['display_mode'] == 'fixed', 'an explicit display selection did not leave focused mode'
+            config.write_text(valid_config); call('reload')
             # Switching archive folders is explicit, keeps the old archive, and
             # preserves both the recording and index control choices.
             original_history = history

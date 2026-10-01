@@ -706,6 +706,10 @@ QString storageCapacitySummary(const QJsonObject& status, const QString& directo
     return lines.join('\n');
 }
 
+// Combobox sentinel for the "Focused display" choice. It is a mode, never a
+// connector name, so it is never written to `output`.
+const QString kFocusedDisplayChoice = QStringLiteral("@focused");
+
 class SettingsDialog final : public QDialog {
 public:
     explicit SettingsDialog(QWidget* parent, const QJsonObject& recordingStatus, std::function<QJsonArray()> displays) : QDialog(parent),
@@ -780,6 +784,7 @@ public:
         output_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         output_->setMinimumContentsLength(24);
         output_->addItem("Choose a display", QString());
+        output_->addItem("Focused display · follows your focus", kFocusedDisplayChoice);
         connect(output_, &QComboBox::activated, this, [this] { displayChosen_ = true; });
         form->addRow("&Display", output_);
         displayNote_ = note("Looking for connected displays…");
@@ -1031,7 +1036,8 @@ public:
             meetingsEnabled_->setEnabled(recorderAvailable || config.meetingsEnabled);
             meetingsDirectory_->setText(replayMeetingsDirectory(config));
             tabs->setTabVisible(meetingTab, recorderAvailable || config.meetingsEnabled);
-            if (!config.output.isEmpty()) { output_->addItem(config.output + " · checking availability", config.output); output_->setCurrentIndex(1); }
+            if (config.displayMode == "focused") output_->setCurrentIndex(output_->findData(kFocusedDisplayChoice));
+            else if (!config.output.isEmpty()) { output_->addItem(config.output + " · checking availability", config.output); output_->setCurrentIndex(output_->findData(config.output)); }
             interval_->setValue(config.intervalSeconds);
             storageDirectory_ = config.storageDirectory; storage_->setText(replayHistoryDirectory(config));
             days_->setValue(config.retentionDays); disk_->setValue(config.maxDiskMiB); free_->setValue(config.minFreeMiB);
@@ -1068,6 +1074,7 @@ public:
         connect(free_, &QSpinBox::valueChanged, this, updateCapacity);
         connect(days_, &QSpinBox::valueChanged, this, updateCapacity);
         connect(interval_, &QDoubleSpinBox::valueChanged, this, updateCapacity);
+        connect(output_, &QComboBox::currentIndexChanged, this, [this] { updateDisplayNote(); });
         connect(output_, &QComboBox::currentIndexChanged, this, updateCapacity);
         updateStorageCapacity();
         connect(&writer_, &QFutureWatcher<QString>::finished, this, [this] {
@@ -1078,6 +1085,7 @@ public:
         connect(&displays_, &QFutureWatcher<QJsonArray>::finished, this, [this] {
             const QString selected = output_->currentData().toString();
             const QSignalBlocker blocker(output_); output_->clear(); output_->addItem("Choose a display", QString());
+            output_->addItem("Focused display · follows your focus", kFocusedDisplayChoice);
             for (const auto& value : displays_.result()) {
                 const auto monitor = value.toObject(); const auto name = monitor.value("name").toString();
                 if (name.isEmpty() || monitor.value("disabled").toBool()) continue;
@@ -1088,11 +1096,9 @@ public:
                 if (width > 0 && height > 0) label += QString(" · %1 × %2").arg(width).arg(height);
                 output_->addItem(label, name);
             }
-            const int connected = output_->count() - 1;
             if (!selected.isEmpty() && output_->findData(selected) < 0) output_->addItem(selected + " · disconnected", selected);
             output_->setCurrentIndex(std::max(0, output_->findData(selected)));
-            displayNote_->setText(connected ? "Replay follows this physical display."
-                : "No displays found. Reconnect your saved display and reopen Settings.");
+            updateDisplayNote();
         });
         displays_.setFuture(QtConcurrent::run([displays = std::move(displays)] { try { return displays(); } catch (...) { return QJsonArray(); } }));
         output_->setFocus();
@@ -1106,10 +1112,20 @@ private:
         error_->setVisible(!message.isEmpty());
     }
 
+    void updateDisplayNote() {
+        if (output_->currentData().toString() == kFocusedDisplayChoice)
+            displayNote_->setText("Replay records whichever display has focus at each capture.");
+        else if (output_->count() > 2) displayNote_->setText("Replay follows this physical display.");
+        else displayNote_->setText("No displays found. Reconnect your saved display and reopen Settings.");
+    }
+
     void updateStorageCapacity() {
         const auto& saved = document_.config;
+        const QString selected = output_->currentData().toString();
+        const QString selectedMode = selected == kFocusedDisplayChoice ? QStringLiteral("focused") : QStringLiteral("fixed");
         const bool differentCapture = QDir(storage_->text()).absolutePath() != QDir(replayHistoryDirectory(saved)).absolutePath() ||
-            interval_->value() != saved.intervalSeconds || output_->currentData().toString() != saved.output;
+            interval_->value() != saved.intervalSeconds || selectedMode != saved.displayMode ||
+            (selectedMode == "fixed" && selected != saved.output);
         const bool unappliedCapture = recordingStatus_.value("running").toBool() &&
             ((recordingStatus_.contains("interval_seconds") && recordingStatus_.value("interval_seconds").toDouble() != saved.intervalSeconds) ||
              (recordingStatus_.contains("output") && recordingStatus_.value("output").toString() != saved.output));
@@ -1178,8 +1194,15 @@ private:
     void save() {
         if (!configEditable_) return;
         auto config = document_.config;
-        config.output = output_->currentData().toString();
-        if (config.output != document_.config.output || displayChosen_) config.outputIdentity.clear();
+        const QString chosen = output_->currentData().toString();
+        const bool focused = chosen == kFocusedDisplayChoice;
+        config.displayMode = focused ? "focused" : "fixed";
+        // The sentinel is a mode, not a display: the saved output and its pinned
+        // identity stay untouched for when the user returns to a fixed display.
+        if (!focused) {
+            config.output = chosen;
+            if (config.output != document_.config.output || displayChosen_) config.outputIdentity.clear();
+        }
         config.storageDirectory = storageDirectory_;
         config.meetingsEnabled = meetingsEnabled_->isChecked();
         config.meetingsDirectory = meetingsDirectory_->text().trimmed();
@@ -1955,6 +1978,7 @@ private:
             {"excluded", "Paused while an excluded window is visible."}, {"storage-cleanup", "Rolling out oldest history to make room."},
             {"storage-full", "Recording paused: storage could not be reclaimed."},
             {"excluded_window", "Paused while an excluded window is visible."},
+            {"focus_unknown", "Waiting for a focused display."},
             {"output_unavailable", "Waiting for your selected display."}, {"output_off", "Waiting for your selected display."},
             {"output_identity_changed", "The selected display has changed. Review Settings."},
             {"stale_window_exclusion", "Review window exclusions for this desktop session."},
@@ -1963,7 +1987,11 @@ private:
         QStringList message;
         if (busy) message << "Updating recording controls…";
         else message << states.value(state, "Waiting to record.");
-        if (state == "recording" && !recording_.value("output").toString().isEmpty()) message.last() += " " + recording_.value("output").toString() + ".";
+        if (state == "recording") {
+            const bool focused = recording_.value("display_mode").toString() == "focused";
+            const QString recording = focused ? recording_.value("recording_output").toString() : recording_.value("output").toString();
+            if (!recording.isEmpty()) message.last() += focused ? QString(" %1 (follows focus).").arg(recording) : " " + recording + ".";
+        }
         for (const auto& value : {recording_.value("reason").toString(), recording_.value("config_error").toString(), recording_.value("storage_error").toString(), recordingMessage_})
             if (!value.isEmpty() && value != "Recording the selected display." && !message.contains(value)) message << value;
         recordingState_->setText(message.join('\n'));

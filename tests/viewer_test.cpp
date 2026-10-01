@@ -253,7 +253,7 @@ private slots:
             QVERIFY(prompt.contains("systemctl --user disable omarchy-replay.service"));
             QVERIFY(prompt.contains("without --now"));
             for (const QString& key : {"[recording]", "[storage]", "[indexing]", "[service]", "[exclusions]", "[agent]",
-                                      "output_identity", "retention_days", "min_free_mib", "cpu_ceiling_percent",
+                                      "output_identity", "display_mode", "retention_days", "min_free_mib", "cpu_ceiling_percent",
                                       "title_regex", "compositor_instance"}) QVERIFY(prompt.contains(key));
             // An installed path with spaces, apostrophes and a dollar sign must
             // survive the shell assignment without expansion or a checkout cwd.
@@ -703,6 +703,57 @@ private slots:
         QCOMPARE(rules.size(), 1);
         QCOMPARE(rules[0].appId, "org.example.SyntheticBrowser"); QCOMPARE(rules[0].address, "0x555");
         QCOMPARE(rules[0].compositorInstance, "synthetic-compositor-instance");
+        viewer->close();
+    }
+
+    void focusedDisplayChoiceSavesModeAndPreservesConfiguredOutput() {
+        QTemporaryDir temporary;
+        ViewerEnvironment environment(temporary.path());
+        auto document = replay::loadReplayConfig();
+        document.config.output = "SYNTHETIC-1";
+        document.config.outputIdentity = "synthetic-monitor-identity";
+        replay::saveReplayConfig(document.config, document.original);
+        FakeRecording service;
+        auto viewer = replay::createViewer(replay::replayPaths().historyDirectory, service.hooks());
+        viewer->show(); viewer->activateWindow();
+        QTRY_VERIFY(!viewer->property("historyLoading").toBool());
+        QTest::keyClick(viewer->findChild<QLineEdit*>("recallSearch"), Qt::Key_Escape);
+        QTest::keyClick(viewer.get(), Qt::Key_I);
+        auto* settings = viewer->findChild<QPushButton*>("openReplaySettings");
+        bool visited = false;
+        QTimer::singleShot(0, [&] {
+            auto* dialog = viewer->findChild<QDialog*>("replaySettings");
+            QVERIFY(dialog); visited = true;
+            QTimer::singleShot(15000, dialog, &QDialog::reject);
+            auto* output = dialog->findChild<QComboBox*>("settingOutput"); QVERIFY(output);
+            QTRY_VERIFY(output->findData("SYNTHETIC-2") >= 0);
+            // Fixed mode keeps the saved display selected, next to the new entry.
+            QCOMPARE(output->currentData().toString(), QString("SYNTHETIC-1"));
+            const int focused = output->findData("@focused");
+            QVERIFY(focused >= 0);
+            output->setFocus(); output->setCurrentIndex(focused);
+            auto* save = dialog->findChild<QDialogButtonBox*>("settingsButtons")->button(QDialogButtonBox::Save);
+            QVERIFY(save->isEnabled());
+            save->setFocus(); QTest::keyClick(save, Qt::Key_Space);
+        });
+        settings->setFocus(); QTest::keyClick(settings, Qt::Key_Space);
+        QVERIFY(visited);
+        const auto saved = replay::loadReplayConfig().config;
+        QCOMPARE(saved.displayMode, "focused");
+        QCOMPARE(saved.output, "SYNTHETIC-1");
+        QCOMPARE(saved.outputIdentity, "synthetic-monitor-identity");
+        QTimer::singleShot(0, [&] {
+            auto* dialog = viewer->findChild<QDialog*>("replaySettings");
+            QVERIFY(dialog);
+            QTimer::singleShot(15000, dialog, &QDialog::reject);
+            auto* output = dialog->findChild<QComboBox*>("settingOutput"); QVERIFY(output);
+            QTRY_VERIFY(output->findData("SYNTHETIC-2") >= 0);
+            QCOMPARE(output->currentData().toString(), QString("@focused"));
+            QVERIFY(output->findData("@focused") >= 0);
+            QTest::keyClick(dialog, Qt::Key_Escape);
+        });
+        settings->setFocus(); QTest::keyClick(settings, Qt::Key_Space);
+        QCOMPARE(replay::loadReplayConfig().config.displayMode, "focused");
         viewer->close();
     }
 

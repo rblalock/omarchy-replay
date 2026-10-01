@@ -42,7 +42,8 @@ Saved recording intent is separate from conditions that temporarily block captur
 | Omarchy screensaver visible on the recorded display | Pause capture. Resume after it closes only when saved intent is running and other environment checks pass. |
 | Suspend/shutdown signal | Stop capture and release display resources; preserve retained history and intent. |
 | Wake | Wait for unlocked/active session, the same display and verified masks. Never burst through missed ticks. |
-| Display disconnect, sleep or replacement | Wait; never silently switch outputs. The first verified selection pins hardware identity. |
+| Display disconnect, sleep or replacement (fixed mode) | Wait; never silently switch outputs. The first verified selection pins hardware identity. |
+| Display switch (focused mode) | Record whichever display has focus at the capture tick; no identity pin. A focused display that is off, mirrored or excluded pauses the tick instead of substituting the other display. |
 | Compositor restart/reload | Reconnect to the verified current Wayland socket and revalidate masking before retaining another image. |
 | Coordinator restart | Reopen the shared archive, restore saved intent and indexing pause, and record the downtime gap. |
 | Logout | The user service follows the graphical session. Next login follows the explicit login-startup setting and saved intent. |
