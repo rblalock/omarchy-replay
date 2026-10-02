@@ -134,13 +134,24 @@ void checkDiskBudget(const QString &root) {
         options.maxDiskBytes = 16 * 1024 * 1024;
         options.minFreeBytes = 0;
         replay::Recorder recorder(options);
-        requireError([&] {
+        QString failure;
+        try {
             for (int i = 0; i < 30; ++i) {
                 randomize(noise, randomState);
                 recorder.addFrame(noise, i * 1000);
             }
-            recorder.finish();
-        }, "high-entropy recording did not stop at its disk budget");
+        } catch (const std::exception &e) { failure = e.what(); }
+        require(!failure.isEmpty(), "high-entropy recording did not stop at its disk budget");
+        // A budget stop can win the race with the encoder's own exit, so judge
+        // both surfaces: the stop error (the write path saw the dead encoder)
+        // and the exit detail the failure cleanup reaped from a child that had
+        // already exited (last_encoder_exit). The byte limit must stop the
+        // encoder cleanly (EFBIG with SIGXFSZ ignored), never a signal 25 kill
+        // that leaves a core dump behind; a child still running at cleanup is
+        // killed there, which is not the disk-limit kill this check is about.
+        require(codec == "webp" || (!failure.contains("crashed by signal") &&
+                !recorder.statsJSON()["last_encoder_exit"].toString().contains("crashed by signal")),
+                "video encoder was killed by a signal at the disk limit instead of exiting cleanly");
         quint64 actualBytes = 0;
         QDirIterator files(options.directory, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
         while (files.hasNext()) { files.next(); actualBytes += files.fileInfo().size(); }
