@@ -20,7 +20,26 @@ constexpr qint64 MaxInputQueued = 128 * 1024;
 constexpr int MaxWallMs = 10000;
 
 SelectionOcrResult failure(const QString &message) { return {{}, message, false}; }
+
+const QRegularExpression &languagePattern() {
+    // \\z, not $: PCRE's $ also matches before a trailing newline.
+    static const QRegularExpression pattern("^(?:script/)?[A-Za-z0-9_]+(?:\\+(?:script/)?[A-Za-z0-9_]+)*\\z");
+    return pattern;
+}
 } // namespace
+
+QString ocrLanguagesProblem(const QString &languages) {
+    if (languages.isEmpty() || languages.size() > 256 || !languagePattern().match(languages).hasMatch())
+        return QStringLiteral("must be Tesseract language names joined by +, such as eng+fra");
+    // osd (orientation/script detection) and equ (equations) load as models
+    // but do not recognize text, so they would index garbage.
+    for (const QString &language : languages.split('+'))
+        if (language.compare("osd", Qt::CaseInsensitive) == 0 || language.compare("equ", Qt::CaseInsensitive) == 0)
+            return QString("cannot include %1, which is not a text recognition model").arg(language);
+    return {};
+}
+
+bool validOcrLanguages(const QString &languages) { return ocrLanguagesProblem(languages).isEmpty(); }
 
 SelectionOcrResult recognizeSelection(const QImage &crop, const std::shared_ptr<std::atomic_bool> &cancel) {
     const auto cancelled = [&] { return cancel && cancel->load(); };
@@ -30,8 +49,7 @@ SelectionOcrResult recognizeSelection(const QImage &crop, const std::shared_ptr<
         return failure("Select a smaller, nonempty area to copy.");
     const QString languages = qEnvironmentVariable("OMARCHY_OCR_LANGS", "eng").trimmed();
     const QString selectedLanguages = languages.isEmpty() ? QStringLiteral("eng") : languages;
-    static const QRegularExpression languagePattern("^(?:script/)?[A-Za-z0-9_]+(?:\\+(?:script/)?[A-Za-z0-9_]+)*$");
-    if (selectedLanguages.size() > 256 || !languagePattern.match(selectedLanguages).hasMatch())
+    if (!validOcrLanguages(selectedLanguages))
         return failure("Check OMARCHY_OCR_LANGS: use language names joined by +, such as eng+deu.");
 
     QElapsedTimer elapsed;

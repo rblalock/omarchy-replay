@@ -287,6 +287,16 @@ def main():
             call('resume'); eventually(lambda: count() >= 2); call('pause')
             with sqlite3.connect(history / 'index.sqlite') as db:
                 assert db.execute('SELECT MIN(id) FROM frames').fetchone()[0] > greatest_id, 'moment IDs were reused'
+            # A configured OCR model that is not installed stops the worker with
+            # a named error and leaves retained moments pending, never failed.
+            config.write_text(valid_config.replace('[indexing]\n', '[indexing]\nocr_languages="eng+zzqmissing"\n'))
+            call('reload'); call('index-resume')
+            eventually(lambda: 'zzqmissing' in status()['index_error'], 30)
+            missing = status()
+            assert 'tesseract-data-zzqmissing' in missing['index_error'], missing['index_error']
+            assert missing['progress'].get('pending') > 0 and missing['progress'].get('failed') == 0, 'missing model failed moments'
+            assert missing['index_policy']['ocr_langs'] == 'eng+zzqmissing'
+            config.write_text(valid_config); call('reload')
             call('index-resume')
             eventually(lambda: status()['progress'].get('pending') == 0, 30)
             assert status()['progress'].get('failed') == 0

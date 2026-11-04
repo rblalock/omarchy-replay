@@ -248,7 +248,7 @@ void failedSourceIsNotEmptyReady(const QString &root) {
     std::cout << "PASS unreadable original is explicitly failed, never ready-empty\n";
 }
 
-void corruptModelFailsEveryPendingJob(const QString &root) {
+void corruptModelKeepsJobsPending(const QString &root) {
     const QVector<QImage> originals{sourceFrame(1042), sourceFrame(1043)};
     auto options = deferredOptions(root + "/corrupt-model-jobs");
     {
@@ -272,30 +272,33 @@ void corruptModelFailsEveryPendingJob(const QString &root) {
     auto workerOptions = indexOptions(options.directory);
     workerOptions.ocrDataPath = modelDirectory;
     replay::Indexer indexer(workerOptions);
-    // Both calls use the same worker. The second must retry initialization,
+    // An unloadable model is a configuration problem, not evidence about any
+    // frame: every call stops with OcrEngineUnavailable and nothing is marked
+    // failed. Repeated calls use the same worker and must retry initialization
     // rather than dereference an engine left unusable by the first failed Init.
-    for (int i = 0; i < originals.size(); ++i) {
-        const auto result = indexer.processNext();
-        require(result.processed && !result.canceled && result.state == "failed" &&
-                result.frameId == before[i].id && !result.error.isEmpty(),
-                "Corrupt model did not fail each pending job cleanly in the same worker");
+    for (int i = 0; i < 3; ++i) {
+        bool unavailable = false;
+        try { indexer.processNext(); }
+        catch (const replay::OcrEngineUnavailable &error) {
+            unavailable = QString::fromUtf8(error.what()).contains(modelDirectory);
+        }
+        require(unavailable, "Corrupt model did not stop indexing with an error naming its data path");
     }
-    const auto idle = indexer.processNext();
-    require(!idle.processed && idle.state == "idle", "Corrupt model caused an endless failed-job retry");
+    require(indexer.statsJSON().value("failed_jobs").toInteger() == 0, "Corrupt model counted frames as failed jobs");
     const auto after = replay::listFrames(options.directory);
     require(after.size() == originals.size(), "Failed initialization lost accepted history");
     for (int i = 0; i < after.size(); ++i) {
-        require(after[i].id == before[i].id && after[i].ocrState == "failed" &&
-                after[i].text.isEmpty() && !after[i].ocrError.isEmpty() && !after[i].originalPath.isEmpty(),
-                "Failed initialization published partial text or discarded its original reference");
+        require(after[i].id == before[i].id && after[i].ocrState == "pending" &&
+                after[i].text.isEmpty() && after[i].ocrError.isEmpty() && !after[i].originalPath.isEmpty(),
+                "Failed initialization changed job state, published partial text or discarded its original reference");
         require(replay::loadFrame(options.directory, after[i].id).convertToFormat(QImage::Format_RGBA8888) == originals[i],
                 "Failed initialization changed or removed retained original pixels");
     }
     const auto status = replay::indexingStatus(options.directory);
-    require(status["failed"].toInteger() == 2 && status["pending"].toInteger() == 0 &&
+    require(status["failed"].toInteger() == 0 && status["pending"].toInteger() == 2 &&
             status["ready"].toInteger() == 0 && replay::searchFrames(options.directory, "Patrick").empty(),
-            "Failed initialization was advertised as searchable or left work falsely pending");
-    std::cout << "PASS corrupt model fails consecutive jobs safely and preserves both originals\n";
+            "Failed initialization was advertised as searchable or failed retained work");
+    std::cout << "PASS corrupt model stops indexing, keeps both jobs pending and preserves both originals\n";
 }
 
 void signalAndRestart(const QString &root, const QString &binary) {
@@ -526,7 +529,7 @@ int main(int argc, char **argv) {
         videoPendingPixels(temporary.path());
         indexedVideoReleasesQueuePressure(temporary.path());
         failedSourceIsNotEmptyReady(temporary.path());
-        corruptModelFailsEveryPendingJob(temporary.path());
+        corruptModelKeepsJobsPending(temporary.path());
         signalAndRestart(temporary.path(), QString::fromLocal8Bit(argv[1]));
         priorityFairnessAndReordering(temporary.path());
         requestExpiryAndBounds(temporary.path());

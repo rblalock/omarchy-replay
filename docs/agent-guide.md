@@ -112,6 +112,7 @@ The default file is `~/.config/omarchy-replay/config.toml`; an absolute `XDG_CON
 | `indexing` | `pressure_cpu_percent` | Number, 1–`active_cpu_percent`; default 10. Allowance during sustained contention. |
 | `indexing` | `cpu_ceiling_percent` | Number, 1–100, or 0 to disable the requested worker ceiling; default 60. Verify actual enforcement in status. |
 | `indexing` | `idle_seconds` | Integer, 1–3,600; default 60. |
+| `indexing` | `ocr_languages` | Tesseract language names joined by `+`, e.g. `eng+fra`; default `"eng"`. Empty falls back to `eng`. Every language's traineddata must be installed, e.g. `tesseract-data-fra`. Selection OCR keeps using `OMARCHY_OCR_LANGS`. |
 | `service` | `login_startup` | Boolean; default false. Starts the coordinator at login with saved capture intent. |
 | `meetings` | `enabled` | Boolean; default false. Opt in to completed transcripts from an installed Omarchy Meeting Recorder. |
 | `meetings` | `directory` | Clean absolute source folder, or `""` for `~/Documents/Meetings`. No `.`/`..`, trailing slash, `/` or symlinked source. |

@@ -1,5 +1,6 @@
 #include "recorder.h"
 #include "meeting_index.h"
+#include "selection_ocr.h"
 #include "work_budget.h"
 
 #include <QCryptographicHash>
@@ -697,12 +698,18 @@ struct OcrEngine {
     double initOcrMs = 0;
     QElapsedTimer lifetime;
     explicit OcrEngine(const RecorderOptions &opts) : options(opts) {
+        options.ocrLanguages = options.ocrLanguages.trimmed();
+        if (options.ocrLanguages.isEmpty()) options.ocrLanguages = QStringLiteral("eng");
+        if (const QString problem = ocrLanguagesProblem(options.ocrLanguages); !problem.isEmpty())
+            error("OCR languages " + problem);
         if (options.ocrMaxHeight != 0 && (options.ocrMaxHeight < 256 || options.ocrMaxHeight > 8192))
             error("OCR maximum height must be 0 or between 256 and 8192 pixels");
         if (!options.ocrDataPath.isEmpty()) {
-            const QFileInfo model(QDir(options.ocrDataPath).filePath("eng.traineddata"));
-            if (!QFileInfo(options.ocrDataPath).isDir() || !model.isFile() || !model.isReadable() || model.size() <= 0)
-                error("OCR data path must contain a readable, nonempty eng.traineddata model");
+            for (const QString &language : options.ocrLanguages.split('+')) {
+                const QFileInfo model(QDir(options.ocrDataPath).filePath(language + ".traineddata"));
+                if (!QFileInfo(options.ocrDataPath).isDir() || !model.isFile() || !model.isReadable() || model.size() <= 0)
+                    error(QString("OCR data path must contain a readable, nonempty %1.traineddata model").arg(language));
+            }
             options.ocrDataPath = QFileInfo(options.ocrDataPath).absoluteFilePath();
         }
         for (const char *reason : {"mode", "initial", "size", "geometry", "refresh", "unchanged_pixels",
@@ -718,10 +725,30 @@ struct OcrEngine {
         QElapsedTimer timer; timer.start();
         auto initialized = std::make_unique<tesseract::TessBaseAPI>();
         const QByteArray dataPath = QFile::encodeName(options.ocrDataPath);
-        if (initialized->Init(dataPath.isEmpty() ? nullptr : dataPath.constData(), "eng", tesseract::OEM_LSTM_ONLY) != 0)
-            error(options.ocrDataPath.isEmpty()
-                      ? "Cannot initialize Tesseract English model; install tesseract-data-eng or use --no-ocr"
-                      : "Cannot initialize Tesseract English model from the explicit OCR data path");
+        const QByteArray languages = options.ocrLanguages.toUtf8();
+        const QStringList configured = options.ocrLanguages.split('+');
+        // Tesseract's Init succeeds when any one listed model loads and only
+        // logs the others, so compare what actually loaded: indexing with a
+        // silently reduced language set would mark frames ready that the
+        // configured models would read differently.
+        QStringList missing = configured;
+        if (initialized->Init(dataPath.isEmpty() ? nullptr : dataPath.constData(), languages.constData(), tesseract::OEM_LSTM_ONLY) == 0) {
+            std::vector<std::string> loaded;
+            initialized->GetLoadedLanguagesAsVector(&loaded);
+            for (const auto &language : loaded) missing.removeAll(QString::fromStdString(language));
+        }
+        if (!missing.isEmpty()) {
+            QStringList packages;
+            for (const QString &language : missing)
+                if (!language.startsWith("script/")) packages << "tesseract-data-" + language.toLower();
+            const QString names = missing.join(", ");
+            if (!options.ocrDataPath.isEmpty())
+                throw OcrEngineUnavailable(QString("Cannot load the Tesseract %1 model from the explicit OCR data path %2; "
+                    "add the matching .traineddata files or change the OCR languages").arg(names, options.ocrDataPath).toStdString());
+            throw OcrEngineUnavailable(QString("Cannot load the Tesseract %1 model%2; install %3 or change [indexing] ocr_languages")
+                .arg(names, missing.size() > 1 ? "s" : "",
+                     packages.isEmpty() ? QString("the matching .traineddata files") : packages.join(" and ")).toStdString());
+        }
         initialized->SetPageSegMode(tesseract::PSM_AUTO);
         ocr = std::move(initialized);
         initOcrMs = timer.nsecsElapsed() / 1e6;
@@ -1719,7 +1746,8 @@ QJsonObject Recorder::statsJSON() const {
             {"hash_wall_ms", d->hashWallMs}, {"ocr_wall_ms", d->ocrWallMs}, {"media_wall_ms", d->mediaWallMs},
             {"index_wall_ms", d->indexWallMs}, {"hash_cpu_ms", d->hashCpuMs}, {"ocr_cpu_ms", d->ocrCpuMs},
             {"media_cpu_ms", d->mediaCpuMs}, {"index_cpu_ms", d->indexCpuMs}, {"ocr_init_ms", d->initOcrMs},
-            {"ocr_mode", d->options.ocrMode}, {"ocr_full_frames", d->ocrFullFrames}, {"ocr_partial_frames", d->ocrPartialFrames},
+            {"ocr_mode", d->options.ocrMode}, {"ocr_languages", d->options.ocrLanguages},
+            {"ocr_full_frames", d->ocrFullFrames}, {"ocr_partial_frames", d->ocrPartialFrames},
             {"ocr_partial_fallbacks", d->ocrPartialFallbacks}, {"ocr_processed_pixels", d->ocrProcessedPixels}, {"ocr_input_pixels", d->ocrInputPixels},
             {"ocr_cpu_percent", d->options.ocrCpuPercent}, {"ocr_max_wall_ms", d->options.ocrMaxWallMs},
             {"ocr_budget_checkpoints", qint64(d->ocrBudgetCheckpoints)},
@@ -1742,6 +1770,7 @@ RecorderOptions workerOptions(const IndexerOptions &options) {
     result.ocrMode = options.ocrMode; result.ocrCpuPercent = options.ocrCpuPercent;
     result.ocrMaxWallMs = options.ocrMaxWallMs; result.stopRequested = options.stopRequested;
     result.ocrDataPath = options.ocrDataPath; result.ocrMaxHeight = options.ocrMaxHeight;
+    result.ocrLanguages = options.ocrLanguages;
     if ((result.ocrMode != "full" && result.ocrMode != "incremental" && result.ocrMode != "regions") || !std::isfinite(result.ocrCpuPercent) ||
         result.ocrCpuPercent < 0 || result.ocrCpuPercent > 100 || result.ocrMaxWallMs < 1 || result.ocrMaxWallMs > 60000)
         error("Invalid index-worker OCR options");
@@ -1839,33 +1868,57 @@ struct Indexer::Impl : OcrEngine {
         // initialize from the exact bytes we hash. A file stat/hash around Init
         // cannot prove which bytes Init read during a concurrent replacement.
         QElapsedTimer timer; timer.start();
-        QFile model(QDir(QString::fromUtf8(ocr->GetDatapath())).filePath("eng.traineddata"));
+        const QStringList languages = options.ocrLanguages.split('+');
+        // Multiple models cannot be re-initialized from one byte buffer, so
+        // beyond a single language this hashes each model file from disk and
+        // keeps the already-initialized engine. ponytail: a model replaced on
+        // disk between hashing and use is claimed under the old hash; the
+        // single-language path below keeps the byte-exact guarantee.
+        const bool byteExact = languages.size() == 1;
+        const QString language = languages.first();
+        QFile model(QDir(QString::fromUtf8(ocr->GetDatapath())).filePath(language + ".traineddata"));
         constexpr qint64 modelLimit = 64 * MiB;
         if (!model.open(QIODevice::ReadOnly) || model.size() <= 0 || model.size() > modelLimit) return;
         const QByteArray bytes = model.read(modelLimit + 1);
         if (bytes.isEmpty() || bytes.size() > modelLimit || !model.atEnd()) return;
-        const SerialOcrScope serial;
-        auto exact = std::make_unique<tesseract::TessBaseAPI>();
-        if (exact->Init(bytes.constData(), int(bytes.size()), "eng", tesseract::OEM_LSTM_ONLY,
-                        nullptr, 0, nullptr, nullptr, false, nullptr) != 0) return;
-        std::vector<std::string> languages;
-        exact->GetLoadedLanguagesAsVector(&languages);
-        if (languages != std::vector<std::string>{"eng"}) return;
-        exact->SetPageSegMode(tesseract::PSM_AUTO);
+        std::unique_ptr<tesseract::TessBaseAPI> exact;
+        if (byteExact) {
+            const SerialOcrScope serial;
+            exact = std::make_unique<tesseract::TessBaseAPI>();
+            const QByteArray languageBytes = language.toUtf8();
+            if (exact->Init(bytes.constData(), int(bytes.size()), languageBytes.constData(), tesseract::OEM_LSTM_ONLY,
+                            nullptr, 0, nullptr, nullptr, false, nullptr) != 0) return;
+            std::vector<std::string> loaded;
+            exact->GetLoadedLanguagesAsVector(&loaded);
+            if (loaded != std::vector<std::string>{language.toStdString()}) return;
+            exact->SetPageSegMode(tesseract::PSM_AUTO);
+        }
         // Bump this revision for changes to preprocessing, layout extraction,
         // or serialization. Incremental modes share only their full results.
-        QByteArray profile = "replay-full-ocr-v1;eng;lstm-only;psm-auto;rgba8888;smooth-height;outward-geometry;";
+        // The configured language set is part of the profile: cached OCR from
+        // another language set is never reused.
+        QByteArray profile = "replay-full-ocr-v1;" + options.ocrLanguages.toUtf8() + ";lstm-only;psm-auto;rgba8888;smooth-height;outward-geometry;";
         profile += tesseract::TessBaseAPI::Version(); profile += ';'; profile += qVersion(); profile += ';';
         char *leptonica = getLeptonicaVersion();
         if (!leptonica) return;
         profile += leptonica; profile += ';'; lept_free(leptonica);
         profile += QByteArray::number(options.ocrMaxHeight); profile += ';';
+        if (!byteExact) {
+            for (const QString &named : languages) {
+                QFile trained(QDir(QString::fromUtf8(ocr->GetDatapath())).filePath(named + ".traineddata"));
+                if (!trained.open(QIODevice::ReadOnly) || trained.size() <= 0 || trained.size() > modelLimit) return;
+                const QByteArray contents = trained.read(modelLimit + 1);
+                if (contents.isEmpty() || contents.size() > modelLimit || !trained.atEnd()) return;
+                profile += named.toUtf8(); profile += '=';
+                profile += QCryptographicHash::hash(contents, QCryptographicHash::Sha256).toHex(); profile += ';';
+            }
+        }
         // The exact fingerprint is raw rows in full mode, a tree of 32-row
         // SHA-256 bands in incremental mode, or 128x64 tiles in regions mode.
         profile += "pixel-key-v1:"; profile += options.ocrMode.toUtf8(); profile += ';';
         profile += QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex();
         reuseProfile = QString::fromLatin1(QCryptographicHash::hash(profile, QCryptographicHash::Sha256).toHex());
-        ocr = std::move(exact);
+        if (exact) ocr = std::move(exact);
         reuseIdentityMs += timer.nsecsElapsed() / 1e6;
     }
 
@@ -2135,6 +2188,13 @@ IndexResult Indexer::processNextOnce() {
     } catch (const OcrCancelled &) {
         ++d->canceledJobs; d->resetGeometry(); result.canceled = true; result.state = "pending";
         return result;
+    } catch (const OcrEngineUnavailable &) {
+        if (!sqlite3_get_autocommit(d->db->handle)) sqlite3_exec(d->db->handle, "ROLLBACK", nullptr, nullptr, nullptr);
+        d->resetGeometry();
+        // A missing or unloadable model says nothing about this frame. Leave
+        // it pending and stop the worker so its owner reports the error and
+        // retries later instead of failing the whole backlog.
+        throw;
     } catch (const SqliteError &) {
         if (!sqlite3_get_autocommit(d->db->handle)) d->db->exec("ROLLBACK");
         d->resetGeometry();
@@ -2203,6 +2263,7 @@ QJsonObject Indexer::statsJSON() const {
         {"elapsed_ms", double(d->lifetime.elapsed())}, {"process_cpu_ms", cpuMs() - d->startCpuMs},
         {"ocr_wall_ms", d->ocrWallMs}, {"ocr_cpu_ms", d->ocrCpuMs}, {"decode_wall_ms", d->decodeWallMs},
         {"hash_wall_ms", d->hashWallMs}, {"ocr_init_ms", d->initOcrMs}, {"ocr_mode", d->options.ocrMode},
+        {"ocr_languages", d->options.ocrLanguages},
         {"ocr_full_frames", d->ocrFullFrames}, {"ocr_partial_frames", d->ocrPartialFrames},
         {"ocr_partial_fallbacks", d->ocrPartialFallbacks}, {"ocr_processed_pixels", d->ocrProcessedPixels}, {"ocr_input_pixels", d->ocrInputPixels},
         {"ocr_budget_sleep_ms", d->ocrBudgetSleepMs}, {"ocr_budget_sleep_count", qint64(d->ocrBudgetSleeps)},

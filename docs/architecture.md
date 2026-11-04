@@ -75,7 +75,7 @@ SQLite uses WAL mode and short transactions. Image decode and recognition happen
 
 ## OCR and search
 
-The shared worker uses Tesseract English data with incremental OCR at original resolution. It compares changes with the previous image, recognizes eligible changed regions and reuses unchanged line results. It falls back to full recognition when reuse is unsuitable. A jump in processing order clears continuity-dependent geometry. The separate exact whole-frame reuse experiment remains opt-in.
+The shared worker uses Tesseract data with incremental OCR at original resolution. The configured language set comes from `[indexing] ocr_languages` (Tesseract language names joined by `+`, e.g. `eng+fra`; default `eng`; empty falls back to `eng`). Every configured language's traineddata must be installed, or indexing fails with an error naming the missing model. It compares changes with the previous image, recognizes eligible changed regions and reuses unchanged line results. It falls back to full recognition when reuse is unsuitable. A jump in processing order clears continuity-dependent geometry. The separate exact whole-frame reuse experiment remains opt-in, and its cached results are keyed by the configured language set: changing `ocr_languages` never reuses OCR text produced for another language set.
 
 OCR text and line geometry commit together. Search uses FTS5's `unicode61` tokenizer. The viewer expands the final token after three characters: `contin` can match `continue`, `continuous` and `continuity`. Other supplied terms must also occur. This is prefix matching; it does not correct arbitrary spelling errors or provide semantic search. The current `search` CLI uses whole-token matching.
 

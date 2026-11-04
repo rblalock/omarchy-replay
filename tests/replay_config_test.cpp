@@ -136,6 +136,32 @@ private slots:
         QVERIFY(replay::loadReplayConfig(path).config.skippedApps.isEmpty());
     }
 
+    void ocrLanguagesValidateAndRoundTrip() {
+        QTemporaryDir directory;
+        const QString path = directory.filePath("config.toml");
+        write(path, "[indexing]\nocr_languages = 'eng+fra'\n");
+        const auto document = replay::loadReplayConfig(path);
+        QCOMPARE(document.config.ocrLanguages, "eng+fra");
+        replay::saveReplayConfig(document.config, document.original, path);
+        QCOMPARE(replay::loadReplayConfig(path).config.ocrLanguages, "eng+fra");
+        write(path, "[indexing]\nocr_languages = 'eng fre'\n");
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, replay::loadReplayConfig(path));
+        write(path, "[indexing]\nocr_languages = 'eng;;fra'\n");
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, replay::loadReplayConfig(path));
+        write(path, "[indexing]\nocr_languages = \"eng\\n\"\n");
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error, replay::loadReplayConfig(path));
+        // osd and equ load as models but do not recognize text.
+        for (const char *nonText : {"osd", "eng+OSD", "equ+eng"}) {
+            write(path, QString("[indexing]\nocr_languages = '%1'\n").arg(nonText).toUtf8());
+            try { replay::loadReplayConfig(path); QFAIL("non-text OCR model was accepted"); }
+            catch (const std::runtime_error &error) { QVERIFY(QString::fromUtf8(error.what()).contains("not a text recognition model")); }
+        }
+        write(path, "[indexing]\nocr_languages = ''\n");
+        // An empty value is accepted: it falls back to eng at the OCR engine,
+        // like an unset OMARCHY_OCR_LANGS in selection OCR.
+        QCOMPARE(replay::loadReplayConfig(path).config.ocrLanguages, "");
+    }
+
     void realTomlAndUnknownValuesSurviveSave() {
         QTemporaryDir directory;
         const QString path = directory.filePath("config.toml");

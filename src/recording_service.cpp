@@ -91,6 +91,7 @@ RecorderOptions recordingOptions(const ReplayPaths &paths, const ReplayConfig &c
     options.directory = paths.historyDirectory; options.resume = true; options.rollingStorage = true;
     options.archiveFirst = true; options.deferredOcr = true; options.codec = "webp";
     options.intervalSeconds = config.intervalSeconds; options.ocrMode = "incremental";
+    options.ocrLanguages = config.ocrLanguages;
     options.maxDiskBytes = quint64(config.maxDiskMiB) * MiB;
     options.minFreeBytes = quint64(config.minFreeMiB) * MiB;
     options.maxPendingFrames = 0;
@@ -376,6 +377,15 @@ public:
             workerReceipt = QJsonDocument::fromJson(indexOutput).object();
             if (indexWorker.exitStatus() != QProcess::NormalExit || indexWorker.exitCode() != 0) {
                 indexError = "Index worker stopped; retained moments will retry after a short delay.";
+                // Surface the worker's own final error (for example a missing
+                // OCR language model) so status explains what to fix.
+                const auto lines = QString::fromUtf8(indexErrors).split('\n', Qt::SkipEmptyParts);
+                for (auto line = lines.crbegin(); line != lines.crend(); ++line) {
+                    if (!line->startsWith("replay: ")) continue;
+                    indexError = "Index worker stopped: " + line->mid(8).trimmed().left(500) +
+                        " Retained moments stay pending and will retry after a short delay.";
+                    break;
+                }
                 retryIndexAfter = time + 10000; log(indexError);
                 QFile file(paths.stateDirectory + "/index-worker.stderr.tail.log");
                 if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -385,6 +395,8 @@ public:
         }
         const qint64 ready = progress.value("ready").toInteger();
         if (progress.value("pending").toInteger() || ready != previousReady) indexLastWork = time;
+        // A restarted worker that publishes again has recovered from the error.
+        if (workerStarted && ready > previousReady && previousReady > 0) indexError.clear();
         previousReady = ready;
         // Keep incremental OCR warm across nearby capture ticks, then release
         // its memory after a quiet period. One child owns the entire history.
@@ -400,7 +412,8 @@ public:
             "--scheduler", "adaptive", "--ocr-mode", "incremental", "--ocr-max-wall-ms", "60000",
             "--ocr-cpu-percent", QString::number(c.activeCpuPercent), "--idle-cpu-percent", QString::number(c.idleCpuPercent),
             "--request-cpu-percent", QString::number(c.requestCpuPercent), "--pressure-cpu-percent", QString::number(c.pressureCpuPercent),
-            "--idle-seconds", QString::number(c.idleSeconds), "--ocr-cpu-ceiling-percent", QString::number(c.cpuCeilingPercent)};
+            "--idle-seconds", QString::number(c.idleSeconds), "--ocr-cpu-ceiling-percent", QString::number(c.cpuCeilingPercent),
+            "--ocr-langs", c.ocrLanguages};
         indexOutput.clear(); indexErrors.clear();
         indexWorker.start(QCoreApplication::applicationFilePath(), args);
         if (!indexWorker.waitForStarted(2000)) { retryIndexAfter = time + 10000; indexError = "Cannot launch the index worker."; }
@@ -483,6 +496,9 @@ public:
             stopMeetings(); stopIndex(); closeCapture();
             if (changedHistory) { finishGap(); indexReader.reset(); historyReady = false; }
             document = std::move(next);
+            // New settings may fix a worker failure (for example a missing OCR
+            // model); retry with them now rather than reporting the old error.
+            indexError.clear(); retryIndexAfter = 0;
             if (changedHistory) {
                 paths.historyDirectory = replayHistoryDirectory(document.config);
                 progress = {}; usage = {}; workerReceipt = {}; lastRetained = 0;
@@ -552,7 +568,8 @@ public:
         result["index_policy"] = QJsonObject{{"scheduler", "adaptive"}, {"ocr_mode", "incremental"},
             {"ocr_cpu_percent", c.activeCpuPercent}, {"idle_cpu_percent", c.idleCpuPercent},
             {"request_cpu_percent", c.requestCpuPercent}, {"pressure_cpu_percent", c.pressureCpuPercent},
-            {"idle_seconds", c.idleSeconds}, {"ocr_cpu_ceiling_percent", c.cpuCeilingPercent}};
+            {"idle_seconds", c.idleSeconds}, {"ocr_cpu_ceiling_percent", c.cpuCeilingPercent},
+            {"ocr_langs", c.ocrLanguages}};
         if (indexWorker.state() != QProcess::NotRunning)
             result["worker_policy"] = ownedIndexWorkerPolicy(paths.historyDirectory, indexWorker.processId());
         else if (!workerReceipt.isEmpty()) result["worker_resources"] = workerReceipt.value("resources");

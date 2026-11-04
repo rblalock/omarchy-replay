@@ -197,13 +197,16 @@ def main():
             model = root / 'broken-model-files'; model.mkdir()
             model_file = model / 'eng.traineddata'; model_file.write_bytes(b'not a trained model')
             service(broken, 'start', *POLICY, '--ocr-data-path', model)
-            error = wait_for(lambda: (s if (s := service(broken, 'status'))['state'] == 'error'
-                                     and s.get('progress', {}).get('failed', 0) > 0 else None), 15)
-            assert error['running'] and 'retry-failed' in error['recovery'] and len(error['log_tail']) <= 8192
-            failed_before = command('status', '--dir', broken)['failed']
+            # An unloadable model stops the service on the first worker exit,
+            # names the model problem and keeps every moment pending.
+            error = wait_for(lambda: (s if (s := service(broken, 'status'))['state'] == 'error' else None), 15)
+            assert 'OCR model' in error['recovery'] and str(model) in error['error'], error
+            assert len(error['log_tail']) <= 8192
+            progress = command('status', '--dir', broken)
+            assert progress['failed'] == 0 and progress['pending'] > 0, 'Unloadable model failed retained moments'
             time.sleep(2.2)
-            assert command('status', '--dir', broken)['failed'] == failed_before and not service(broken, 'status')['worker_running'], \
-                'Failed OCR jobs were automatically retried without authorization'
+            assert command('status', '--dir', broken)['pending'] == progress['pending'] and not service(broken, 'status')['worker_running'], \
+                'Unloadable model was retried without a settings change'
             model_file.unlink()
             invalid = service(broken, 'status')
             assert invalid['state'] == 'error' and invalid['policy_error'] and 'enabled' in invalid
@@ -212,7 +215,6 @@ def main():
             recovered = service(broken, 'start', *POLICY)
             assert recovered['paused'] and recovered['configured'], 'Explicit valid replacement policy did not recover'
             service(broken, 'stop')
-            command('index', '--dir', broken, '--retry-failed', '--scheduler', 'fixed', '--ocr-cpu-percent', 0)
             service(broken, 'resume')
             wait_for(lambda: command('status', '--dir', broken)['pending'] == 0, 30)
             service(broken, 'stop')

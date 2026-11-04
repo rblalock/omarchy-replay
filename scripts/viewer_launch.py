@@ -10,6 +10,8 @@ import sys
 from runtime_layout import native_binary
 
 ROOT = Path(__file__).resolve().parents[1]
+# Mirrors replay::ocrLanguagesProblem: names joined by +, at most 256 characters.
+OCR_LANGUAGES = re.compile(r'(?:script/)?[A-Za-z0-9_]+(?:\+(?:script/)?[A-Za-z0-9_]+)*')
 
 
 def view_command(binary, dataset, config):
@@ -41,6 +43,12 @@ def view_command(binary, dataset, config):
         if key in ('ocr_max_wall_ms', 'idle_seconds') and int(value) != value:
             raise RuntimeError('Trial contains invalid integer indexing settings.')
         command += ['--' + key.replace('_', '-'), str(value)]
+    languages = config.get('ocr_langs', 'eng')
+    if not isinstance(languages, str) or len(languages) > 256 or not OCR_LANGUAGES.fullmatch(languages) or \
+            any(name.lower() in ('osd', 'equ') for name in languages.split('+')):
+        raise RuntimeError('Trial contains invalid OCR languages.')
+    if languages != 'eng':
+        command += ['--ocr-langs', languages]
     reuse = config.get('ocr_reuse', False)
     if type(reuse) is not bool:
         raise RuntimeError('Trial contains invalid OCR reuse setting.')
@@ -105,7 +113,7 @@ def process_view(pid, binary):
         parser.add_argument('--ocr-reuse', action='store_true')
         for option in ('scheduler', 'ocr-mode', 'ocr-data-path', 'ocr-max-height', 'ocr-cpu-percent',
                        'ocr-max-wall-ms', 'idle-seconds', 'idle-cpu-percent', 'request-cpu-percent',
-                       'pressure-cpu-percent', 'ocr-cpu-ceiling-percent'):
+                       'pressure-cpu-percent', 'ocr-cpu-ceiling-percent', 'ocr-langs'):
             parser.add_argument('--' + option)
         args = parser.parse_args(argv[1:])
         dataset = Path(args.dir)

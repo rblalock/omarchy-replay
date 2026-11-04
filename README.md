@@ -119,7 +119,7 @@ and daemon status before editing.
 TOML options: [recording] output, output_identity, interval_seconds;
 [storage] directory, retention_days, max_disk_mib, min_free_mib;
 [indexing] active_cpu_percent, idle_cpu_percent, request_cpu_percent,
-pressure_cpu_percent, cpu_ceiling_percent, idle_seconds;
+pressure_cpu_percent, cpu_ceiling_percent, idle_seconds, ocr_languages;
 [service] login_startup; [meetings] enabled, directory; [exclusions] apps, skip_apps; [[exclusions.windows]] app_id,
 title_regex, scope, address, compositor_instance. [agent] preferred is reserved.
 Meeting imports are optional and off by default. An empty meetings directory uses
@@ -137,7 +137,10 @@ edited. Preserve existing entries and unknown keys.
 Supported ranges: interval_seconds 0.25-60; retention_days integer 1-3650;
 max_disk_mib integer 64-1048576; min_free_mib integer 0-1048576; active/idle/request
 CPU 1-100; pressure CPU 1-active_cpu_percent; ceiling CPU 0 or 1-100; idle_seconds
-integer 1-3600. login_startup is boolean. At most 64 entries across apps and skip_apps, plus 64 window rules.
+integer 1-3600; ocr_languages is Tesseract names joined by + (e.g. "eng+fra";
+default "eng"; empty falls back to eng; every language's traineddata must be
+installed, e.g. tesseract-data-fra; selection OCR keeps using OMARCHY_OCR_LANGS).
+login_startup is boolean. At most 64 entries across apps and skip_apps, plus 64 window rules.
 Custom storage must be an existing, user-owned, empty or Replay archive folder on
 a local filesystem, with a clean absolute path and no folder symlink.
 Optional full reference: https://github.com/rblalock/omarchy-replay/blob/main/docs/agent-guide.md.

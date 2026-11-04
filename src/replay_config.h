@@ -37,6 +37,9 @@ struct ReplayConfig {
     QVector<WindowExclusion> excludedWindows;
     QString preferredAgent;
     bool meetingsEnabled = false;
+    // Tesseract languages joined by + for background OCR indexing, e.g.
+    // "eng+fra". Empty falls back to "eng", like OMARCHY_OCR_LANGS.
+    QString ocrLanguages = "eng";
     // Empty uses Meeting Recorder's default ~/Documents/Meetings folder.
     QString meetingsDirectory;
 };
