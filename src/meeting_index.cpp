@@ -175,6 +175,31 @@ MeetingRecord record(Statement &s) {
     MeetingRecord m; m.id = s.number(0); m.title = s.text(1); m.startedAtMs = s.number(2); m.timeKnown = s.number(3);
     m.durationSeconds = s.number(4); m.sourceDirectory = s.text(5); m.manifestPath = s.text(6); m.revision = s.text(7) + m.manifestPath; return m;
 }
+// Matching lines in transcript order, each clipped around its first match.
+QStringList matchingPassages(const QString &text, const QString &query, SearchMode mode, int limit) {
+    QStringList passages;
+    if (limit <= 0) return passages;
+    qsizetype lastLineStart = -1;
+    for (const auto &range : meetingMatchRanges(text, query, mode)) {
+        const qsizetype lineStart = text.lastIndexOf('\n', range.first) + 1;
+        if (lineStart == lastLineStart) continue;
+        lastLineStart = lineStart;
+        qsizetype lineEnd = text.indexOf('\n', range.first);
+        if (lineEnd < 0) lineEnd = text.size();
+        qsizetype start = lineStart, end = lineEnd;
+        if (end - start > MeetingPassageChars) {
+            start = std::max(lineStart, qsizetype(range.first) - MeetingPassageChars / 3);
+            end = std::min(lineEnd, start + MeetingPassageChars);
+            start = std::max(lineStart, end - MeetingPassageChars);
+        }
+        QString passage = text.mid(start, end - start).trimmed();
+        if (start > lineStart) passage.prepend(QStringLiteral("…"));
+        if (end < lineEnd) passage.append(QStringLiteral("…"));
+        passages.append(passage);
+        if (passages.size() >= limit) break;
+    }
+    return passages;
+}
 int passageCount(const QString &text, const QString &query, SearchMode mode) {
     QSet<int> lines;
     int line = 0;
@@ -247,20 +272,45 @@ QVector<QPair<int,int>> meetingMatchRanges(const QString &text, const QString &q
 MeetingSearchPage listMeetings(const QString &directory, int limit, qint64 offset) {
     return searchMeetings(directory, {}, limit, offset);
 }
-MeetingSearchPage searchMeetings(const QString &directory, const QString &query, int limit, qint64 offset, SearchMode mode) {
+MeetingSearchPage searchMeetings(const QString &directory, const QString &query, int limit, qint64 offset, SearchMode mode,
+                                const MeetingSearchOptions &options) {
     MeetingSearchPage result; result.offset = std::max(qint64(0), offset);
     Database db(directory,false); if (!db.db || !schema(db.db)) return result;
     const auto match = ftsQuery(query,mode); if (!query.trimmed().isEmpty() && match.isEmpty()) return result;
     const bool searching = !match.isEmpty();
+    // Interval overlap on known start times; undated imports cannot be placed.
+    QByteArray window;
+    if (options.sinceMs > 0 || options.untilMs > 0) window += " AND m.time_known=1";
+    if (options.sinceMs > 0) window += " AND m.started_ms+m.duration_secs*1000>=?";
+    if (options.untilMs > 0) window += " AND m.started_ms<=?";
+    const auto bindWindow = [&](Statement &s, int column) {
+        if (options.sinceMs > 0) s.bind(column++, options.sinceMs);
+        if (options.untilMs > 0) s.bind(column++, options.untilMs);
+        return column;
+    };
     exec(db.db, "BEGIN");
-    Statement count(db.db, searching ? "SELECT count(*) FROM meeting_text WHERE meeting_text MATCH ?" : "SELECT count(*) FROM meeting_records");
-    if (searching) count.bind(1,match);
+    const QByteArray countSql = searching ?
+        "SELECT count(*) FROM meeting_records m JOIN meeting_text ON meeting_text.rowid=m.id WHERE meeting_text MATCH ?" + window :
+        "SELECT count(*) FROM meeting_records m WHERE 1" + window;
+    Statement count(db.db, countSql.constData());
+    int column = 1; if (searching) count.bind(column++,match); bindWindow(count, column);
     count.next(); result.totalMatches = count.number(0);
-    Statement rows(db.db, searching ?
-        "SELECT m.id,m.title,m.started_ms,m.time_known,m.duration_secs,m.source_directory,m.manifest_path,m.signature,m.transcript FROM meeting_records m JOIN meeting_text ON meeting_text.rowid=m.id WHERE meeting_text MATCH ? ORDER BY m.retention_ms DESC,m.id DESC LIMIT ? OFFSET ?" :
-        "SELECT id,title,started_ms,time_known,duration_secs,source_directory,manifest_path,signature,'' FROM meeting_records ORDER BY retention_ms DESC,id DESC LIMIT ? OFFSET ?");
-    int column=1; if(searching) rows.bind(column++,match); rows.bind(column++,std::clamp(limit,1,100)); rows.bind(column,result.offset);
-    while(rows.next()) { MeetingSearchResult r; r.meeting=record(rows); r.matchingPassages=searching ? passageCount(rows.text(8),query,mode) : 0; result.results.append(r); }
+    const QByteArray rowSql = (searching ?
+        "SELECT m.id,m.title,m.started_ms,m.time_known,m.duration_secs,m.source_directory,m.manifest_path,m.signature,m.transcript FROM meeting_records m JOIN meeting_text ON meeting_text.rowid=m.id WHERE meeting_text MATCH ?" + window :
+        "SELECT m.id,m.title,m.started_ms,m.time_known,m.duration_secs,m.source_directory,m.manifest_path,m.signature,'' FROM meeting_records m WHERE 1" + window)
+        + " ORDER BY m.retention_ms DESC,m.id DESC LIMIT ? OFFSET ?";
+    Statement rows(db.db, rowSql.constData());
+    column=1; if(searching) rows.bind(column++,match); column=bindWindow(rows,column);
+    rows.bind(column++,std::clamp(limit,1,MeetingPageLimit)); rows.bind(column,result.offset);
+    while(rows.next()) {
+        MeetingSearchResult r; r.meeting=record(rows);
+        if (searching) {
+            const QString text = rows.text(8);
+            r.matchingPassages = passageCount(text,query,mode);
+            r.passages = matchingPassages(text,query,mode,options.passageLimit);
+        }
+        result.results.append(r);
+    }
     exec(db.db, "COMMIT"); return result;
 }
 std::optional<MeetingRecord> readMeeting(const QString &directory,qint64 id) {

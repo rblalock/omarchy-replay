@@ -3,6 +3,7 @@
 #include "recorder.h"
 #include <QPair>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <functional>
 #include <memory>
@@ -22,7 +23,11 @@ struct MeetingRecord {
     QString manifestPath;
     QString transcript; // Plain text; populated only by readMeeting().
 };
-struct MeetingSearchResult { MeetingRecord meeting; int matchingPassages = 0; };
+struct MeetingSearchResult {
+    MeetingRecord meeting;
+    int matchingPassages = 0;
+    QStringList passages; // Bounded matching lines; filled only when requested.
+};
 struct MeetingSearchPage {
     QVector<MeetingSearchResult> results;
     qint64 totalMatches = 0;
@@ -32,9 +37,17 @@ struct MeetingTimelinePoint { qint64 id = 0; qint64 startedAtMs = 0; QString tit
 
 // Never creates a database/schema. An archive without imported meetings is empty.
 MeetingSearchPage listMeetings(const QString &directory, int limit = 100, qint64 offset = 0);
+// Optional recall filters. A nonzero bound keeps only meetings with a known
+// start whose [start, start + duration] overlaps the inclusive window; meetings
+// without a known time are excluded whenever a bound is set. passageLimit > 0
+// returns up to that many matching transcript lines, each at most
+// MeetingPassageChars characters, without exposing the transcript body.
+struct MeetingSearchOptions { qint64 sinceMs = 0, untilMs = 0; int passageLimit = 0; };
+constexpr int MeetingPageLimit = 100, MeetingPassageChars = 240;
 MeetingSearchPage searchMeetings(const QString &directory, const QString &query,
                                 int limit = 100, qint64 offset = 0,
-                                SearchMode mode = SearchMode::PrefixLastToken);
+                                SearchMode mode = SearchMode::PrefixLastToken,
+                                const MeetingSearchOptions &options = {});
 std::optional<MeetingRecord> readMeeting(const QString &directory, qint64 id);
 std::optional<FrameRecord> screenNearMeetingStart(const QString &directory, qint64 timestampMs, qint64 toleranceMs = 10000);
 QVector<MeetingTimelinePoint> meetingTimeline(const QString &directory, int limit = 1000);

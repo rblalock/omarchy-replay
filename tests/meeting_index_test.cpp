@@ -3,7 +3,9 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QProcess>
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <sqlite3.h>
@@ -33,6 +35,14 @@ void settle(replay::MeetingImporter &importer,qint64 now,qint64 cutoff=0){
 QString archive(const QString &root,const QString &name){
     replay::RecorderOptions opts;opts.directory=root+'/'+name;opts.resume=true;opts.archiveFirst=true;opts.deferredOcr=true;opts.minFreeBytes=0;
     replay::Recorder recorder(opts);recorder.finish();return opts.directory;
+}
+QJsonObject recall(const QString &binary,const QStringList &arguments,bool ok=true){
+    QProcess process;process.start(binary,QStringList{"recall"}+arguments);
+    require(process.waitForFinished(30000),"recall CLI timed out");
+    require((process.exitStatus()==QProcess::NormalExit && process.exitCode()==0)==ok,"recall CLI exit status");
+    if(!ok)return {};
+    const auto document=QJsonDocument::fromJson(process.readAllStandardOutput());require(document.isObject(),"recall CLI JSON");
+    return document.object();
 }
 qint64 scalar(const QString &path,const char *sql){
     sqlite3 *db=nullptr;require(sqlite3_open(QFile::encodeName(path+"/index.sqlite").constData(),&db)==SQLITE_OK,"fixture database");
@@ -69,6 +79,49 @@ int main(int argc,char **argv){
         const auto full=replay::readMeeting(history,id);require(full && full->transcript.contains("Continuity") && full->timeKnown,"full record read");
         require(replay::meetingMatchRanges(full->transcript,"contin").size()==2,"matching ranges differ from grouped passages");
         require(replay::meetingTimeline(history).size()==2,"known meetings lack start markers");
+        {
+            // Recall: bounded passages instead of transcripts, and time windows
+            // overlap [start, start + duration]; undated meetings never match one.
+            replay::MeetingSearchOptions options;options.passageLimit=3;
+            auto bounded=replay::searchMeetings(history,"contin",100,0,replay::SearchMode::PrefixLastToken,options);
+            require(bounded.totalMatches==1 && bounded.results[0].meeting.transcript.isEmpty(),"recall search copied a transcript");
+            require(bounded.results[0].passages.size()==2 && bounded.results[0].passages[1].contains("Continuity"),"recall passages missing");
+            options.passageLimit=1;bounded=replay::searchMeetings(history,"contin",100,0,replay::SearchMode::PrefixLastToken,options);
+            require(bounded.results[0].passages.size()==1,"passage limit ignored");
+            options.sinceMs=(stamp+299)*1000;require(replay::searchMeetings(history,"contin",100,0,replay::SearchMode::PrefixLastToken,options).totalMatches==1,"window missed a meeting still in progress");
+            options.sinceMs=(stamp+301)*1000;require(replay::searchMeetings(history,"contin",100,0,replay::SearchMode::PrefixLastToken,options).totalMatches==0,"window kept an ended meeting");
+            options.sinceMs=0;options.untilMs=(stamp-1)*1000;require(replay::searchMeetings(history,"contin",100,0,replay::SearchMode::PrefixLastToken,options).totalMatches==0,"window kept a later meeting");
+            {
+                // One very long transcript line is clipped around its match.
+                QTemporaryDir other;require(other.isValid(),"temporary directory");
+                const auto longHistory=archive(other.path(),"history");const auto longSource=other.path()+"/meetings";QDir().mkpath(longSource);
+                meeting(longSource,"Long line",stamp,"[00:01] "+QString("filler ").repeated(200)+"needle "+QString("tail ").repeated(200)+"\n");
+                replay::MeetingImporter longImporter(longHistory,longSource);settle(longImporter,now);
+                options={};options.passageLimit=3;
+                const auto clipped=replay::searchMeetings(longHistory,"needle",100,0,replay::SearchMode::PrefixLastToken,options);
+                require(clipped.totalMatches==1 && clipped.results[0].passages.size()==1,"long-line passage missing");
+                const auto passage=clipped.results[0].passages[0];
+                require(passage.contains("needle") && passage.size()<=replay::MeetingPassageChars+2 && passage.startsWith(QString::fromUtf8("…")) && passage.endsWith(QString::fromUtf8("…")),"long-line passage was not clipped around its match");
+            }
+            if(argc>1){
+                const QString binary=QString::fromLocal8Bit(argv[1]);
+                const auto found=recall(binary,{"contin","--dir",history,"--source","meetings"});
+                const auto entries=found.value("meetings").toArray();
+                require(found.value("meetings_total_matches").toInteger()==1 && entries.size()==1,"recall CLI meeting search");
+                const auto entry=entries[0].toObject();
+                require(!entry.contains("transcript") && entry.value("passages").toArray().size()==2,"recall CLI returned a transcript instead of passages");
+                require(entry.value("started_at_ms").toInteger()==stamp*1000 && found.value("meetings_next_offset").isNull(),"recall CLI meeting fields");
+                const auto past=recall(binary,{"contin","--dir",history,"--source","meetings","--offset","1"});
+                require(past.value("meetings").toArray().isEmpty() && past.value("meetings_next_offset").isNull(),"recall CLI meeting paging did not terminate");
+                const auto later=recall(binary,{"contin","--dir",history,"--source","meetings","--since",QString::number((stamp+301)*1000)});
+                require(later.value("meetings_total_matches").toInteger()==0,"recall CLI ignored the meeting time window");
+                const auto fetched=recall(binary,{"--dir",history,"--meeting-id",QString::number(id)});
+                require(fetched.value("meeting").toObject().value("transcript").toString().contains("Continuity"),"recall CLI meeting fetch");
+                recall(binary,{"--dir",history,"--meeting-id","999999"},false);
+                recall(binary,{"contin","--dir",history,"--meeting-id",QString::number(id)},false);
+                recall(binary,{"--dir",history,"--meeting-id",QString::number(id),"--id","1"},false);
+            }
+        }
         settle(importer,now);require(replay::listMeetings(history).totalMatches==2,"repeat imports duplicated records");
         const auto renamed=source+"/Renamed folder";require(QDir().rename(firstDir,renamed),"rename source");settle(importer,now);
         require(replay::readMeeting(history,id)->sourceDirectory==renamed,"renaming meeting lost stable id/source link");

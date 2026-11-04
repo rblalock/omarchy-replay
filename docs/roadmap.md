@@ -111,7 +111,7 @@ Recall answers should cite captured moments and distinguish visible evidence fro
 
 The history remains local. If the selected coding agent uses a remote model, its requested evidence follows that configured provider path; a locally installed agent does not necessarily imply local model inference. Send only the evidence needed for the current task.
 
-Agent-assisted recall is the next product milestone after release packaging and installation proof. The structured retrieval tools and agent adapter are not implemented yet.
+Agent-assisted recall is the next product milestone after release packaging and installation proof. A structured recall CLI is now implemented as the first step: the `recall` command provides bounded/paginated screen search with time bounds and rank/chronological order, one-moment fetch with text, line geometry, image paths and neighbors, meeting transcript search via `--source`, versioned JSON (`schema_version`), and range coverage with known gaps, over read-only database connections. The agent adapter (a thin optional MCP interface), bundled skill and the remaining interface details are not implemented yet.
 
 ### Practical agent workflows to revisit at that milestone
 

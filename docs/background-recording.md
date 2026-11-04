@@ -192,7 +192,7 @@ If you directly change `service.login_startup`, validate the TOML as above, then
 
 `status` is read-only. `stop` ends new capture while allowing indexing and maintenance. `shutdown` ends the coordinator too. Offline Pause/Stop/Shutdown update saved intent without launching it. Other offline controls can start it with capture held; Start/Resume explicitly permit recording.
 
-The `meetings` object in `daemon status` reports dependency availability, enabled/paused state, the source folder, worker state, last reported import count, sync counters, limits and errors. It contains no transcript text. A `limited` result can mean storage pressure or an importer bound; it does not indicate an OCR backlog. Counts describe the latest scan and may be stale when integration is disabled. Meeting search is currently in the viewer; the CLI `search` command remains screen OCR only.
+The `meetings` object in `daemon status` reports dependency availability, enabled/paused state, the source folder, worker state, last reported import count, sync counters, limits and errors. It contains no transcript text. A `limited` result can mean storage pressure or an importer bound; it does not indicate an OCR backlog. Counts describe the latest scan and may be stale when integration is disabled. Meeting search is in the viewer and in `recall --source meetings|all`; the CLI `search` command remains screen OCR only.
 
 For service failures:
 
