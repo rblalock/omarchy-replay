@@ -377,6 +377,15 @@ public:
             workerReceipt = QJsonDocument::fromJson(indexOutput).object();
             if (indexWorker.exitStatus() != QProcess::NormalExit || indexWorker.exitCode() != 0) {
                 indexError = "Index worker stopped; retained moments will retry after a short delay.";
+                // Surface the worker's own final error (for example a missing
+                // OCR language model) so status explains what to fix.
+                const auto lines = QString::fromUtf8(indexErrors).split('\n', Qt::SkipEmptyParts);
+                for (auto line = lines.crbegin(); line != lines.crend(); ++line) {
+                    if (!line->startsWith("replay: ")) continue;
+                    indexError = "Index worker stopped: " + line->mid(8).trimmed().left(500) +
+                        " Retained moments stay pending and will retry after a short delay.";
+                    break;
+                }
                 retryIndexAfter = time + 10000; log(indexError);
                 QFile file(paths.stateDirectory + "/index-worker.stderr.tail.log");
                 if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -386,6 +395,8 @@ public:
         }
         const qint64 ready = progress.value("ready").toInteger();
         if (progress.value("pending").toInteger() || ready != previousReady) indexLastWork = time;
+        // A restarted worker that publishes again has recovered from the error.
+        if (workerStarted && ready > previousReady && previousReady > 0) indexError.clear();
         previousReady = ready;
         // Keep incremental OCR warm across nearby capture ticks, then release
         // its memory after a quiet period. One child owns the entire history.
@@ -485,6 +496,9 @@ public:
             stopMeetings(); stopIndex(); closeCapture();
             if (changedHistory) { finishGap(); indexReader.reset(); historyReady = false; }
             document = std::move(next);
+            // New settings may fix a worker failure (for example a missing OCR
+            // model); retry with them now rather than reporting the old error.
+            indexError.clear(); retryIndexAfter = 0;
             if (changedHistory) {
                 paths.historyDirectory = replayHistoryDirectory(document.config);
                 progress = {}; usage = {}; workerReceipt = {}; lastRetained = 0;

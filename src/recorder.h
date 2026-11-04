@@ -18,6 +18,17 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// The OCR engine could not load every configured language model. This is a
+// configuration or installation problem, not evidence about any one frame:
+// indexers leave the frame pending and stop instead of marking it failed.
+class OcrEngineUnavailable : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+// Exit status of an index worker stopped by OcrEngineUnavailable, so owners
+// can tell a configuration problem from a crash without parsing messages.
+constexpr int OcrEngineUnavailableExitCode = 3;
+
 class RollingStorageUnavailable : public std::runtime_error {
 public:
     RollingStorageUnavailable(const QString &reason, bool retry) : std::runtime_error(reason.toStdString()), retryable(retry) {}

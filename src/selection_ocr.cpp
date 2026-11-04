@@ -22,14 +22,24 @@ constexpr int MaxWallMs = 10000;
 SelectionOcrResult failure(const QString &message) { return {{}, message, false}; }
 
 const QRegularExpression &languagePattern() {
-    static const QRegularExpression pattern("^(?:script/)?[A-Za-z0-9_]+(?:\\+(?:script/)?[A-Za-z0-9_]+)*$");
+    // \\z, not $: PCRE's $ also matches before a trailing newline.
+    static const QRegularExpression pattern("^(?:script/)?[A-Za-z0-9_]+(?:\\+(?:script/)?[A-Za-z0-9_]+)*\\z");
     return pattern;
 }
 } // namespace
 
-bool validOcrLanguages(const QString &languages) {
-    return !languages.isEmpty() && languages.size() <= 256 && languagePattern().match(languages).hasMatch();
+QString ocrLanguagesProblem(const QString &languages) {
+    if (languages.isEmpty() || languages.size() > 256 || !languagePattern().match(languages).hasMatch())
+        return QStringLiteral("must be Tesseract language names joined by +, such as eng+fra");
+    // osd (orientation/script detection) and equ (equations) load as models
+    // but do not recognize text, so they would index garbage.
+    for (const QString &language : languages.split('+'))
+        if (language.compare("osd", Qt::CaseInsensitive) == 0 || language.compare("equ", Qt::CaseInsensitive) == 0)
+            return QString("cannot include %1, which is not a text recognition model").arg(language);
+    return {};
 }
+
+bool validOcrLanguages(const QString &languages) { return ocrLanguagesProblem(languages).isEmpty(); }
 
 SelectionOcrResult recognizeSelection(const QImage &crop, const std::shared_ptr<std::atomic_bool> &cancel) {
     const auto cancelled = [&] { return cancel && cancel->load(); };

@@ -223,13 +223,14 @@ bool configuredLanguages(const QString &root) {
     }
     record(directory, {french, frame(2), french, frame(2)});
     auto frenchOpts = options(directory); frenchOpts.ocrLanguages = "eng+fra";
-    auto invalid = options(directory); invalid.ocrLanguages = "eng fre";
-    bool rejected = false;
-    try { replay::Indexer bad(invalid); } catch (const std::exception &) { rejected = true; }
-    require(rejected, "invalid OCR language set was accepted");
+    for (const QString &languages : {QString("eng fre"), QString("osd"), QString("eng+OSD"), QString("equ+eng")}) {
+        auto invalid = options(directory); invalid.ocrLanguages = languages;
+        bool rejected = false;
+        try { replay::Indexer bad(invalid); } catch (const std::exception &) { rejected = true; }
+        require(rejected, ("invalid OCR language set was accepted: " + languages.toStdString()).c_str());
+    }
     // The eng+fra scenario needs fra.traineddata, which the README does not
-    // require. Skip (exit 77) instead of failing; the eng-only checks above
-    // and elsewhere still run.
+    // require. Skip only this scenario; every other check still runs.
     if (!traineddataInstalled("fra")) {
         std::cout << "SKIP eng+fra reuse scenario: fra.traineddata is not installed; install tesseract-data-fra to exercise it\n";
         return false;
@@ -250,6 +251,29 @@ bool configuredLanguages(const QString &root) {
     require(count(english, "ocr_reuse_hits") == 0 && count(english, "ocr_full_frames") == 1,
             "eng reused a cached eng+fra result");
     return true;
+}
+
+// A configured model that is not installed must stop indexing with a clear
+// error and leave the frame pending, whether it is the primary language
+// (Tesseract Init fails) or a secondary one (Init succeeds with fewer models).
+void missingModelsStayPending(const QString &root) {
+    const QString name = "zzqmissing";
+    require(!traineddataInstalled(name), "test language unexpectedly installed");
+    int index = 0;
+    for (const QString &languages : {"eng+" + name, name, name + "+eng"}) {
+        const QString directory = root + "/missing-" + QString::number(index++);
+        record(directory, {frame(1)});
+        auto opts = options(directory); opts.ocrLanguages = languages; opts.ocrReuse = false;
+        replay::Indexer indexer(opts);
+        QString message;
+        try { indexer.processNext(); }
+        catch (const replay::OcrEngineUnavailable &error) { message = QString::fromUtf8(error.what()); }
+        require(message.contains(name) && message.contains("tesseract-data-" + name) && !message.contains("tesseract-data-eng"),
+                ("missing model was not reported by name for " + languages.toStdString() + ": " + message.toStdString()).c_str());
+        require(sql(directory, "SELECT ocr_state FROM frames WHERE id=1") == "pending" && count(indexer, "failed_jobs") == 0 &&
+                count(indexer, "processed") == 0, ("missing model changed frame state for " + languages.toStdString()).c_str());
+        require(indexer.statsJSON().value("ocr_languages").toString() == languages, "stats omit active OCR languages");
+    }
 }
 
 void busyPublicationStaysPending(const QString &root) {
@@ -293,8 +317,10 @@ int main(int argc, char **argv) {
         exactPixelsAndPartialProvenance(temporary.path()); invalidationAndBound(temporary.path());
         publicationAndSourceGuard(temporary.path());
         busyPublicationStaysPending(temporary.path());
-        if (!configuredLanguages(temporary.path())) return 77; // eng+fra skipped: fra.traineddata missing
-        std::cout << "PASS exact whole-frame OCR reuse, durable provenance, invalidation and atomic publication\n";
+        missingModelsStayPending(temporary.path());
+        const bool french = configuredLanguages(temporary.path());
+        std::cout << "PASS exact whole-frame OCR reuse, durable provenance, invalidation and atomic publication"
+                  << (french ? "" : " (eng+fra scenario skipped)") << "\n";
         return 0;
     } catch (const std::exception &error) { std::cerr << error.what() << '\n'; return 1; }
 }

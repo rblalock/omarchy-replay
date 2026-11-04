@@ -159,8 +159,10 @@ void validateReplayConfig(const ReplayConfig& config) {
     if (config.cpuCeilingPercent > 0 && config.cpuCeilingPercent < 1) invalid("cpu_ceiling_percent must be 0 or at least 1");
     bounded(config.idleSeconds, 1, 3600, "idle_seconds");
     shortText(config.ocrLanguages, 256, "ocr_languages");
-    if (!config.ocrLanguages.trimmed().isEmpty() && !validOcrLanguages(config.ocrLanguages.trimmed()))
-        invalid("ocr_languages must be Tesseract language names joined by +, such as eng+fra");
+    if (!config.ocrLanguages.trimmed().isEmpty()) {
+        const QString problem = ocrLanguagesProblem(config.ocrLanguages.trimmed());
+        if (!problem.isEmpty()) invalid("ocr_languages " + problem);
+    }
     if (config.excludedApps.size() + config.skippedApps.size() > 64 || config.excludedWindows.size() > 64)
         invalid("at most 64 combined apps and skip_apps entries and 64 window rules are allowed");
     for (const auto& app : config.excludedApps + config.skippedApps) {

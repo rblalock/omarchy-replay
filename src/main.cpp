@@ -314,8 +314,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error("--ocr-max-height must be 0 or between 256 and 8192");
         QString ocrLanguages = p.value("ocr-langs").trimmed();
         if (ocrLanguages.isEmpty()) ocrLanguages = QStringLiteral("eng");
-        if (!replay::validOcrLanguages(ocrLanguages))
-            throw std::runtime_error("--ocr-langs must be Tesseract language names joined by +, such as eng+fra");
+        if (const QString problem = replay::ocrLanguagesProblem(ocrLanguages); !problem.isEmpty())
+            throw std::runtime_error(("--ocr-langs " + problem).toStdString());
         QString ocrDataPath = p.value("ocr-data-path");
         if (!ocrDataPath.isEmpty()) {
             ocrDataPath = QDir(ocrDataPath).absolutePath();
@@ -767,6 +767,9 @@ int main(int argc, char **argv) {
         }
         json(stats);
         return indexWorkerStoppedEarly || (indexWorker && indexWorkerResult.value("exit_code").toInt() != 0) ? 1 : 0;
+    } catch (const replay::OcrEngineUnavailable &e) {
+        std::fprintf(stderr, "replay: %s\n", e.what());
+        return replay::OcrEngineUnavailableExitCode;
     } catch (const std::exception &e) {
         std::fprintf(stderr, "replay: %s\n", e.what());
         return 1;

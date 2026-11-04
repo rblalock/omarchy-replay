@@ -150,8 +150,10 @@ QJsonObject checkedPolicy(const QJsonObject &source) {
     const auto langs = source.value("ocr_langs");
     if (!langs.isUndefined() && !langs.isString()) fail("Saved OCR languages are invalid.");
     const QString languages = langs.toString().trimmed();
-    if (!languages.isEmpty() && !validOcrLanguages(languages))
-        fail("Saved OCR languages must be Tesseract language names joined by +, such as eng+fra.");
+    if (!languages.isEmpty()) {
+        const QString problem = ocrLanguagesProblem(languages);
+        if (!problem.isEmpty()) fail("Saved OCR languages " + problem + ".");
+    }
     result["ocr_langs"] = languages.isEmpty() ? QString("eng") : languages;
     if (scheduler == "adaptive") {
         number("idle_seconds", 60, 1, 3600, true);
@@ -383,6 +385,7 @@ int runIndexService(const QString &directory, const std::function<bool()> &stopR
         if (!worker.waitForFinished(6500)) { worker.kill(); worker.waitForFinished(1000); }
         worker.readAllStandardOutput(); worker.readAllStandardError();
     };
+    QByteArray workerErrors; // Tail of the current worker's stderr, for its final error.
     int failures = 0;
     qint64 retryAfter = 0;
     QElapsedTimer heartbeat; heartbeat.start();
@@ -403,10 +406,21 @@ int runIndexService(const QString &directory, const std::function<bool()> &stopR
             if (policy.isEmpty()) fail("Saved indexing settings are unavailable.");
             const bool paused = intent.value("paused").toBool();
             worker.waitForFinished(0);
-            worker.readAllStandardOutput(); worker.readAllStandardError();
+            worker.readAllStandardOutput();
+            workerErrors += worker.readAllStandardError();
+            if (workerErrors.size() > 8192) workerErrors = workerErrors.right(8192);
             if (paused) stopWorker();
             else if (state.value("controller_pid").toInteger() && worker.state() == QProcess::NotRunning) {
                 state["worker_pid"] = 0; state["controller_pid"] = 0;
+                if (worker.exitStatus() == QProcess::NormalExit && worker.exitCode() == OcrEngineUnavailableExitCode) {
+                    // A missing or unloadable model will not fix itself on retry;
+                    // stop with its own message and keep every moment pending.
+                    QString detail = "The index worker could not load its OCR model.";
+                    const auto lines = QString::fromUtf8(workerErrors).split('\n', Qt::SkipEmptyParts);
+                    for (auto line = lines.crbegin(); line != lines.crend(); ++line)
+                        if (line->startsWith("replay: ")) { detail = line->mid(8).trimmed(); break; }
+                    throw OcrEngineUnavailable(detail.toStdString());
+                }
                 if (worker.exitStatus() != QProcess::NormalExit || worker.exitCode() != 0) {
                     // A lock race belongs to its other owner; do not treat it as
                     // a failed model or repeatedly compete for the same lease.
@@ -447,6 +461,7 @@ int runIndexService(const QString &directory, const std::function<bool()> &stopR
                 } else {
                     QStringList arguments{"index", "--dir", path, "--parent-pid", QString::number(getpid())};
                     arguments << policyArguments(policy);
+                    workerErrors.clear();
                     worker.start(QCoreApplication::applicationFilePath(), arguments);
                     if (!worker.waitForStarted(2000)) fail("Cannot launch the index worker.");
                     state["controller_pid"] = qint64(worker.processId()); state["worker_pid"] = 0; state["state"] = "active";
@@ -463,7 +478,9 @@ int runIndexService(const QString &directory, const std::function<bool()> &stopR
     } catch (const std::exception &error) {
         stopWorker(); state["state"] = "error"; state["error"] = QString::fromUtf8(error.what()).left(500);
         state["reason"] = "Background indexing needs attention.";
-        state["recovery"] = "Check saved indexing settings and retained failed jobs, then start indexing again.";
+        state["recovery"] = dynamic_cast<const OcrEngineUnavailable *>(&error)
+            ? "Install the missing OCR model or change the OCR languages, then start indexing again. Pending moments were kept."
+            : "Check saved indexing settings and retained failed jobs, then start indexing again.";
         operationalLog(runtime, "Background indexing stopped after a service error."); publish();
         return 1;
     }
