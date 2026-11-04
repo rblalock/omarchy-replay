@@ -2477,8 +2477,9 @@ void recordGap(const QString &requestedDirectory, qint64 startMs, qint64 endMs, 
 
 QVector<FrameRecord> listFrames(const QString &directory, int limit, int offset, qint64 sinceMs, qint64 untilMs) {
     Database db(dbPath(directory), false);
+    // A moment is in the window when it was on screen at any point inside it.
     QString filter;
-    if (sinceMs > 0) filter += "WHERE f.timestamp_ms>=? ";
+    if (sinceMs > 0) filter += "WHERE f.last_timestamp_ms>=? ";
     if (untilMs > 0) filter += QString(filter.isEmpty() ? "WHERE" : "AND") + " f.timestamp_ms<=? ";
     const QByteArray sql = frameColumns(db) + filter.toUtf8() + "ORDER BY f.timestamp_ms,f.id LIMIT ? OFFSET ?";
     Statement query(db, sql.constData());
@@ -2512,8 +2513,10 @@ SearchPage searchFramePage(const QString &directory, const QString &text, int li
     // Rank order must keep the matching expression identical; only the page
     // ordering differs. The anchor timeline assumes chronological ordinals.
     const bool rank = order == SearchOrder::Rank;
+    // Overlap semantics: a moment first seen before the window but still on
+    // screen inside it (repeated observations) belongs to the window.
     QString timeFilter;
-    if (sinceMs > 0) timeFilter += " AND f.timestamp_ms>=?";
+    if (sinceMs > 0) timeFilter += " AND f.last_timestamp_ms>=?";
     if (untilMs > 0) timeFilter += " AND f.timestamp_ms<=?";
     const auto bindTime = [&](Statement &query, int column) -> int {
         if (sinceMs > 0) query.bind(column++, sinceMs);
@@ -2792,35 +2795,48 @@ QVector<FrameRecord> framesNear(const QString &directory, qint64 frameId, int co
     Database db(dbPath(directory), false);
     const auto center = frameById(directory, frameId);
     if (!center) error("Recorded frame does not exist");
+    // Keep the 64 moments closest to the center interval, then report them in
+    // time order. Distance is zero for moments overlapping the center.
     const QByteArray sql = frameColumns(db) +
-        "WHERE f.id<>? AND f.last_timestamp_ms>=? AND f.timestamp_ms<=? ORDER BY f.timestamp_ms,f.id LIMIT 64";
+        "WHERE f.id<>? AND f.last_timestamp_ms>=? AND f.timestamp_ms<=? "
+        "ORDER BY CASE WHEN f.last_timestamp_ms<? THEN ?-f.last_timestamp_ms "
+        "WHEN f.timestamp_ms>? THEN f.timestamp_ms-? ELSE 0 END,f.timestamp_ms,f.id LIMIT 64";
     Statement query(db, sql.constData());
     const qint64 span = qint64(contextSeconds) * 1000;
     query.bind(1, frameId);
     query.bind(2, center->timestampMs - span);
     query.bind(3, center->lastTimestampMs + span);
-    return readRows(query);
+    query.bind(4, center->timestampMs); query.bind(5, center->timestampMs);
+    query.bind(6, center->lastTimestampMs); query.bind(7, center->lastTimestampMs);
+    auto rows = readRows(query);
+    std::sort(rows.begin(), rows.end(), [](const FrameRecord &a, const FrameRecord &b) {
+        return a.timestampMs != b.timestampMs ? a.timestampMs < b.timestampMs : a.id < b.id;
+    });
+    return rows;
 }
 
 QJsonObject rangeCoverage(const QString &directory, qint64 sinceMs, qint64 untilMs) {
     Database db(dbPath(directory), false);
+    // Same overlap rule as listFrames/searchFramePage, so counts agree with results.
     QString filter;
-    if (sinceMs > 0) filter += "WHERE timestamp_ms>=? ";
+    if (sinceMs > 0) filter += "WHERE last_timestamp_ms>=? ";
     if (untilMs > 0) filter += QString(filter.isEmpty() ? "WHERE" : "AND") + " timestamp_ms<=? ";
-    QJsonObject result{{"pending", 0}, {"ready", 0}, {"failed", 0}, {"disabled", 0}, {"total", 0}, {"gaps", QJsonArray{}}};
+    const auto bindWindow = [&](Statement &query) {
+        int column = 1;
+        if (sinceMs > 0) query.bind(column++, sinceMs);
+        if (untilMs > 0) query.bind(column++, untilMs);
+        return column;
+    };
+    QJsonObject result{{"pending", 0}, {"ready", 0}, {"failed", 0}, {"disabled", 0}, {"total", 0},
+                       {"gap_count", 0}, {"gaps", QJsonArray{}}, {"gaps_truncated", false}};
+    db.exec("BEGIN");
     if (!hasIndexStates(db)) {
         Statement count(db, "SELECT COUNT(*) FROM frames " + filter.toUtf8());
-        int column = 1;
-        if (sinceMs > 0) count.bind(column++, sinceMs);
-        if (untilMs > 0) count.bind(column++, untilMs);
+        bindWindow(count);
         count.next(); result["ready"] = result["total"] = count.number(0);
-        return result;
-    }
-    {
+    } else {
         Statement counts(db, "SELECT ocr_state,COUNT(*) FROM frames " + filter.toUtf8() + "GROUP BY ocr_state");
-        int column = 1;
-        if (sinceMs > 0) counts.bind(column++, sinceMs);
-        if (untilMs > 0) counts.bind(column++, untilMs);
+        bindWindow(counts);
         while (counts.next()) { result[counts.string(0)] = counts.number(1); result["total"] = result["total"].toInteger() + counts.number(1); }
     }
     {
@@ -2829,16 +2845,20 @@ QJsonObject rangeCoverage(const QString &directory, qint64 sinceMs, qint64 until
             QString gapFilter;
             if (sinceMs > 0) gapFilter += "WHERE end_ms>=? ";
             if (untilMs > 0) gapFilter += QString(gapFilter.isEmpty() ? "WHERE" : "AND") + " start_ms<=? ";
-            Statement gaps(db, "SELECT start_ms,end_ms,reason FROM history_gaps " + gapFilter.toUtf8() + "ORDER BY start_ms,id LIMIT 1000");
-            int column = 1;
-            if (sinceMs > 0) gaps.bind(column++, sinceMs);
-            if (untilMs > 0) gaps.bind(column++, untilMs);
-            auto entries = result["gaps"].toArray();
+            Statement gapCount(db, "SELECT COUNT(*) FROM history_gaps " + gapFilter.toUtf8());
+            bindWindow(gapCount); gapCount.next();
+            const qint64 total = gapCount.number(0);
+            Statement gaps(db, "SELECT start_ms,end_ms,reason FROM history_gaps " + gapFilter.toUtf8() + "ORDER BY start_ms,id LIMIT ?");
+            gaps.bind(bindWindow(gaps), qint64(RecallGapLimit));
+            QJsonArray entries;
             while (gaps.next()) entries.append(QJsonObject{
                 {"start_ms", gaps.number(0)}, {"end_ms", gaps.number(1)}, {"reason", gaps.string(2)}});
+            result["gap_count"] = total;
+            result["gaps_truncated"] = total > entries.size();
             result["gaps"] = entries;
         }
     }
+    db.exec("COMMIT");
     return result;
 }
 

@@ -58,6 +58,7 @@ Run these arguments with `"$replay_bin"`, using the installed executable resolve
 | `search --dir ARCHIVE WORDS` | Return matching indexed frames as JSON. |
 | `recall --dir ARCHIVE WORDS` | Structured agent recall: paginated screen search with optional time range, meeting search, coverage and known gaps as versioned JSON. |
 | `recall --dir ARCHIVE --id ID` | Fetch one moment: recognized text, stored line geometry, image paths and neighboring moments as versioned JSON. |
+| `recall --dir ARCHIVE --meeting-id ID` | Fetch one imported meeting, including its transcript, as versioned JSON. |
 | `list --dir ARCHIVE` | Return a bounded list of retained frames as JSON, optionally within a `--since`/`--until` range with `--limit`/`--offset`. |
 | `extract --dir ARCHIVE --id ID --out IMAGE.png` | Decode a frame into an image file. |
 | `view --dir ARCHIVE` | Open an explicit archive in the native viewer. |
@@ -73,7 +74,7 @@ Recent deletion requires `daemon delete-recent --seconds N --confirmed`, with an
 
 ## Find evidence with the current CLI
 
-The CLI supports screen OCR search, image extraction and structured recall. Use `recall` for agent retrieval: it is bounded, paginated and returns versioned JSON (`schema_version` 1) with stable moment IDs, UTC timestamps, coverage and known gaps. The simpler `search` command still returns a bounded whole-token screen match list without paging or time ranges.
+The CLI supports screen OCR search, image extraction and structured recall. Use `recall` for agent retrieval: it is bounded, paginated and returns versioned JSON (`schema_version` 1) with stable moment IDs, UTC timestamps, coverage and known gaps. The simpler `search` command still returns a bounded whole-word screen match list (no prefix expansion) without paging or time ranges.
 
 Resolve the current archive without guessing its location:
 
@@ -83,17 +84,18 @@ history_dir="$("$replay_bin" daemon paths | python3 -c 'import json,sys; print(j
 "$replay_bin" recall --dir "$history_dir" Patrick invoice
 ```
 
-Search returns frame IDs, UTC timestamps, timestamp bounds, observation counts, OCR text and availability/state fields. Words combine with AND; the final token expands as a prefix after three characters, like the viewer. There is no semantic search and OCR errors are not corrected. All result sets are bounded: no result is not a proof of absence.
+`recall` returns frame IDs, UTC timestamps, timestamp bounds, observation counts, OCR text and availability/state fields. Words combine with AND; in `recall` (not `search`) the final token expands as a prefix after three characters, like the viewer. There is no semantic search and OCR errors are not corrected. All result sets are bounded: no result is not a proof of absence.
 
 Optional bounds and paging for `recall` and `list`:
 
-- `--since` / `--until` accept ISO-8601 timestamps (`2026-01-31T14:00:00Z`, or a bare `2026-01-31` date) or epoch milliseconds. Bare numbers are read as epoch milliseconds.
-- `--limit` (1–1000) and `--offset` page through large result sets; combine with `--order rank` to order by search relevance instead of capture time.
-- `--source` selects `screen` (default), `meetings`, or `all`. Meeting results include title, known start, passage count and the stored transcript. Meeting search has no time filter yet.
+- `--since` / `--until` accept ISO-8601 or epoch milliseconds. Dates and datetimes without a zone (`2026-01-31`, `2026-01-31T14:00`) are the user's local time; an explicit `Z` or offset (`2026-01-31T14:00:00Z`, `+01:00`) is honored. A bare `--until` date covers that whole local day. Bare numbers must be 13-digit epoch milliseconds; epoch seconds, years and negative values are rejected.
+- The window is inclusive and uses overlap: a moment matches when it was on screen at any point inside it (its last observation is at or after `--since` and its first is at or before `--until`). Results, `total_matches` and `coverage` use the same rule.
+- `--limit` (1–1000, default 20; `list` defaults to 200) and `--offset` page through large result sets; combine with `--order rank` to order by search relevance instead of capture time. Follow `next_offset` until it is `null` (`has_more` is false); an offset past the end returns an empty page.
+- `--source` selects `screen` (default), `meetings`, or `all`. Each source pages independently with the same `--offset` and reports its own `meetings_next_offset` / `meetings_has_more`. Meeting results include title, known start, duration, passage count and up to three matching transcript lines (`passages`, each at most 240 characters), never the full transcript; fetch one with `--meeting-id`. Meeting pages hold at most 100 entries (`meetings_limit` reports the effective size). With `--since`/`--until`, meetings match when `[start, start + duration]` overlaps the window, and meetings without a known start are excluded.
 
-`coverage` reports pending, ready, failed and disabled frame counts in the requested range, plus known capture `gaps` from the archive's gap record with their reasons. Pending and failed history is not searchable; say so when relevant, and use `prioritize` or `catch-up` (with the user's consent) to request indexing rather than assuming absence.
+`coverage` reports pending, ready, failed and disabled frame counts in the requested range, plus known capture `gaps` from the archive's gap record with their reasons. At most 100 gaps are listed; `gap_count` is the full number and `gaps_truncated` says whether the list was cut. Pending and failed history is not searchable; say so when relevant, and use `prioritize` or `catch-up` (with the user's consent) to request indexing rather than assuming absence.
 
-Fetch one moment with its recognized text, stored line geometry (empty for older history without saved boxes), image paths relative to the archive, and up to 64 neighboring moments inside `--context-seconds` (0–300, default 15):
+Fetch one moment with its recognized text, stored line geometry (empty for older history without saved boxes), image paths relative to the archive, and the 64 nearest neighboring moments inside `--context-seconds` (0–300, default 15), in time order. `--id` and `--meeting-id` cannot be combined with search words or search options:
 
 ```bash
 "$replay_bin" recall --dir "$history_dir" --id FRAME_ID --context-seconds 15

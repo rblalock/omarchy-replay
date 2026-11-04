@@ -208,7 +208,8 @@ QVector<FrameRecord> listFrames(const QString &directory, int limit = 200, int o
 QVector<FrameRecord> searchFrames(const QString &directory, const QString &query, int limit = 100);
 // Chronological pages and bounded markers cover the complete matching history.
 // Prefix mode expands only the final token when it has at least three characters.
-// A nonzero sinceMs/untilMs bounds the page by capture time; rank order pages
+// A nonzero sinceMs/untilMs keeps moments on screen at any point in the
+// inclusive window (last_timestamp_ms>=since, timestamp_ms<=until); rank order pages
 // by search relevance. Anchor resolution requires chronological order.
 SearchPage searchFramePage(const QString &directory, const QString &query, int limit = 100,
                           qint64 offset = 0, SearchMode mode = SearchMode::Exact, int timelineLimit = 1000,
@@ -232,6 +233,9 @@ QJsonObject indexingStatus(const QString &directory);
 // epoch milliseconds; zero disables a bound.
 QJsonArray frameTextLines(const QString &directory, qint64 frameId); // Stored OCR lines with original-image boxes.
 QVector<FrameRecord> framesNear(const QString &directory, qint64 frameId, int contextSeconds);
+// Index-state counts and recorded gaps overlapping the window. At most
+// RecallGapLimit gaps are listed; gap_count/gaps_truncated report the rest.
+constexpr int RecallGapLimit = 100;
 QJsonObject rangeCoverage(const QString &directory, qint64 sinceMs, qint64 untilMs);
 // Reuse one read-only connection for repeated status polls. No statement or
 // read transaction survives status(), so other writers can commit/checkpoint.
