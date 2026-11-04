@@ -30,6 +30,7 @@
 #include <webp/decode.h>
 #include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <cmath>
 #include <ctime>
 #include <limits>
@@ -1141,6 +1142,11 @@ struct Recorder::Impl : OcrEngine {
     QFile captureLock;
     QProcess encoder;
     QByteArray encoderErrors;
+    // Exit mode of a video encoder that had already exited when the failure
+    // cleanup reaped it (empty when no encoder started, or when the cleanup had
+    // to kill a still-running child).
+    QString lastEncoderExit;
+    bool encoderStarted = false;
     qint64 previousTimestamp = -1, lastFrameId = 0;
     qint64 segmentId = 0, segmentStartMs = 0;
     int segmentCount = 0, segmentWidth = 0, segmentHeight = 0;
@@ -1295,6 +1301,13 @@ struct Recorder::Impl : OcrEngine {
         if (encoderErrors.size() > 8192) encoderErrors = encoderErrors.right(8192);
     }
 
+    // Meaningful only once the encoder is no longer running; distinguishes a
+    // clean exit (for example EFBIG at the -fs limit) from a signal kill.
+    QString encoderExitDetail() const {
+        return QString(" (exit code %1, %2)").arg(encoder.exitCode())
+            .arg(encoder.exitStatus() == QProcess::NormalExit ? "normal exit" : "crashed by signal");
+    }
+
     void startSegment(int width, int height, qint64 timestampMs) {
         const quint64 queueReserve = options.deferredOcr ? options.maxPendingBytes : 0;
         segmentWidth = width; segmentHeight = height; segmentStartMs = timestampMs; segmentCount = 0;
@@ -1339,11 +1352,19 @@ struct Recorder::Impl : OcrEngine {
         encoderErrors.clear();
         encoder.setStandardOutputFile(QProcess::nullDevice());
         encoder.setChildProcessModifier([outputLimit] {
+            // Ignoring SIGXFSZ must survive exec: -fs overshoots while the mux
+            // thread writes ahead, so the kernel rlimit fires first and would
+            // otherwise kill ffmpeg on signal 25 with a core dump. With it
+            // ignored, write() returns EFBIG and ffmpeg exits cleanly.
+            ::signal(SIGXFSZ, SIG_IGN);
+            const rlimit noCore{0, 0};
+            setrlimit(RLIMIT_CORE, &noCore);
             const rlimit limit{rlim_t(outputLimit), rlim_t(outputLimit)};
             if (setrlimit(RLIMIT_FSIZE, &limit) != 0) _exit(126);
         });
         encoder.start("ffmpeg", args, QIODevice::ReadWrite);
         if (!encoder.waitForStarted(5000)) error("Cannot start FFmpeg: " + encoder.errorString());
+        encoderStarted = true;
     }
 
     void writeVideo(const QImage &image) {
@@ -1354,23 +1375,31 @@ struct Recorder::Impl : OcrEngine {
             while (remaining > 0) {
                 drainErrors();
                 if (encoder.state() != QProcess::Running || deadline.elapsed() > ProcessTimeoutMs)
-                    error("Recording stopped: encoder exited or exceeded 30 seconds: " + QString::fromUtf8(encoderErrors));
+                    error("Recording stopped: encoder exited or exceeded 30 seconds"
+                          + (encoder.state() == QProcess::NotRunning ? encoderExitDetail() : QString())
+                          + ": " + QString::fromUtf8(encoderErrors));
                 const qint64 length = std::min<qint64>(remaining, 65536);
                 const qint64 written = encoder.write(data, length);
-                if (written < 0) error("Recording stopped: encoder input failed");
+                if (written < 0)
+                    error("Recording stopped: encoder input failed"
+                          + (encoder.state() == QProcess::NotRunning ? encoderExitDetail() : QString()));
                 data += written; remaining -= written;
                 while (encoder.bytesToWrite() > 65536) {
                     encoder.waitForBytesWritten(100);
                     drainErrors();
                     if (encoder.state() != QProcess::Running || deadline.elapsed() > ProcessTimeoutMs)
-                        error("Recording stopped: encoder input stalled: " + QString::fromUtf8(encoderErrors));
+                        error("Recording stopped: encoder input stalled"
+                              + (encoder.state() == QProcess::NotRunning ? encoderExitDetail() : QString())
+                              + ": " + QString::fromUtf8(encoderErrors));
                 }
             }
         }
         while (encoder.bytesToWrite() > 0) {
             encoder.waitForBytesWritten(100); drainErrors();
             if (encoder.state() != QProcess::Running || deadline.elapsed() > ProcessTimeoutMs)
-                error("Recording stopped: encoder did not consume frame: " + QString::fromUtf8(encoderErrors));
+                error("Recording stopped: encoder did not consume frame"
+                      + (encoder.state() == QProcess::NotRunning ? encoderExitDetail() : QString())
+                      + ": " + QString::fromUtf8(encoderErrors));
         }
     }
 
@@ -1383,7 +1412,8 @@ struct Recorder::Impl : OcrEngine {
         }
         drainErrors();
         if (encoder.exitStatus() != QProcess::NormalExit || encoder.exitCode() != 0)
-            error("Recording stopped: encoder failed; last segment is marked incomplete: " + QString::fromUtf8(encoderErrors));
+            error("Recording stopped: encoder failed; last segment is marked incomplete" + encoderExitDetail()
+                  + ": " + QString::fromUtf8(encoderErrors));
         // FFmpeg's file-size ceiling can produce exit 0 with fewer frames. Never
         // advertise those observations as retrievable without checking the count.
         QProcess probe;
@@ -1637,7 +1667,18 @@ AddFrameResult Recorder::addFrame(const QImage &input, qint64 timestampMs) {
             } catch (...) {} // The durable reservation makes the next recovery safe.
         } else if (!d->options.resume && !unpublishedArchive.isEmpty() && QFile::remove(unpublishedArchive))
             d->sealedMediaBytes -= unpublishedArchiveBytes;
-        if (d->encoder.state() != QProcess::NotRunning) { d->encoder.kill(); d->encoder.waitForFinished(1000); }
+        // A stop can win the race with the encoder's own exit: reap a child that
+        // already exited here so its real exit mode survives the cleanup (this
+        // is what tells a SIGXFSZ kill apart from a clean stop); only a child
+        // still running is killed.
+        if (d->encoderStarted) {
+            if (d->encoder.state() != QProcess::NotRunning) {
+                if (d->encoder.waitForFinished(10)) d->lastEncoderExit = d->encoderExitDetail();
+                else { d->encoder.kill(); d->encoder.waitForFinished(1000); }
+            } else if (d->encoder.error() != QProcess::FailedToStart) {
+                d->lastEncoderExit = d->encoderExitDetail();
+            }
+        }
         throw;
     }
 }
@@ -1688,6 +1729,7 @@ QJsonObject Recorder::statsJSON() const {
             {"allocator_trim_attempts", d->allocatorTrimAttempts}, {"allocator_trim_releases", d->allocatorTrimReleases},
             {"allocator_trim_cpu_ms", d->allocatorTrimCpuMs}, {"allocator_trim_wall_ms", d->allocatorTrimWallMs},
             {"finished", d->finished}, {"failed", d->failed}, {"incomplete_segment", !d->segmentPath.isEmpty()},
+            {"last_encoder_exit", d->lastEncoderExit},
             {"cpu_scope", "recorder process only; FFmpeg child and compositor require external measurement"}};
     d->addExperimentStats(stats);
     return stats;
