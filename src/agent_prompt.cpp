@@ -54,6 +54,7 @@ request_cpu_percent = 50.0 # 1–100, minimum allowance for prioritized/catch-up
 pressure_cpu_percent = 10.0 # 1–active_cpu_percent, during sustained CPU contention.
 cpu_ceiling_percent = 60.0 # 0 disables the requested ceiling; otherwise 1–100.
 idle_seconds = 60 # Integer 1–3600 before idle allowance applies.
+ocr_languages = "eng" # Tesseract models joined by +, e.g. "eng+fra"; empty means eng. Each needs tesseract-data-<lang>; osd/equ are rejected. Frames already indexed keep their text.
 
 [service]
 login_startup = false # Start the coordinator at login with its saved capture intent.

@@ -151,6 +151,7 @@ request_cpu_percent = 50.0
 pressure_cpu_percent = 10.0
 cpu_ceiling_percent = 60.0
 idle_seconds = 60
+ocr_languages = "eng" # Tesseract models joined by +, e.g. "eng+fra"; each needs tesseract-data-<lang>.
 
 [service]
 login_startup = false
