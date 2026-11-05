@@ -169,6 +169,7 @@ public:
     EnvironmentSnapshot desktop;
     QString intent = "stopped", state = "stopped", reason = "Recording is stopped.", configError, indexError;
     QString maskToken, maskInstance, captureInstance, captureDisplay, captureOutput;
+    qint64 captureConnections = 0;
     quint64 maskConfigGeneration = 0;
     bool exclusionsPending = false;
     QString exclusionError;
@@ -185,7 +186,7 @@ public:
     quint64 controlRevision = 0;
     qint64 gapStart = 0, lastRetained = 0, retainedThisRun = 0, attempts = 0;
     // Display of the last retained capture; cleared whenever recording stops.
-    QString recordingOutput, lastCaptureTarget;
+    QString recordingOutput;
     QString gapReason;
     qint64 configModified = -1, configSize = -1;
     qint64 nextForecast = 0;
@@ -349,6 +350,20 @@ public:
     void closeCapture() {
         capture.reset(); captureOutput.clear();
         if (recorder) { try { recorder->finish(); } catch (...) {} recorder.reset(); }
+    }
+    // Binds the capture source to the display this tick selected, in synthetic
+    // runs too: the recorded output and connection count are what production
+    // passes to WaylandCapture, so tests observe the real binding decision.
+    void bindCapture(const QString &output, const QString &display) {
+        if (captureInstance == desktop.compositorInstance && captureDisplay == display &&
+            captureOutput == output && (synthetic || capture)) return;
+        if (!synthetic && (display.isEmpty() || output.isEmpty()))
+            fail("Current compositor display socket is unavailable");
+        capture.reset();
+        if (recorder) recorder->breakContinuity();
+        ++captureConnections;
+        captureInstance = desktop.compositorInstance; captureDisplay = display; captureOutput = output;
+        if (!synthetic) capture = std::make_unique<WaylandCapture>(captureOutput, captureDisplay);
     }
     void transition(const QString &next, const QString &detail) {
         if (next != "recording") {
@@ -601,9 +616,9 @@ public:
         meetings["worker_pid"] = qint64(meetingWorker.processId());
         meetings["error"] = meetingError;
         result["meetings"] = meetings;
-        // Synthetic runs never bind a Wayland connection; the display each
-        // capture attempt targeted is the only observable for focus tests.
-        if (synthetic) result["last_capture_target"] = lastCaptureTarget;
+        // Synthetic runs never bind a Wayland connection; the display the
+        // binding decision selected and its reconnect count stand in for it.
+        if (synthetic) { result["last_capture_target"] = captureOutput; result["capture_connections"] = captureConnections; }
         return result;
     }
     void requestExclusions() {
@@ -781,23 +796,9 @@ public:
             QImage image;
             // Focus mode can move the selected display between ticks. Rebind the
             // source and break continuity so one segment never mixes displays.
-            lastCaptureTarget = desktop.selectedOutput;
-            if (synthetic) image = fixtureFrame(int(attempts % fixtureFrameCount()), QSize(960, 540));
-            else {
-                if (captureInstance != desktop.compositorInstance || captureDisplay != desktop.waylandDisplay ||
-                    captureOutput != desktop.selectedOutput) {
-                    capture.reset();
-                    if (recorder) recorder->breakContinuity();
-                }
-                if (!capture) {
-                    if (desktop.waylandDisplay.isEmpty() || desktop.selectedOutput.isEmpty())
-                        fail("Current compositor display socket is unavailable");
-                    capture = std::make_unique<WaylandCapture>(desktop.selectedOutput, desktop.waylandDisplay);
-                    captureInstance = desktop.compositorInstance; captureDisplay = desktop.waylandDisplay;
-                    captureOutput = desktop.selectedOutput;
-                }
-                image = capture->capture(2000);
-            }
+            bindCapture(desktop.selectedOutput, desktop.waylandDisplay);
+            image = synthetic ? fixtureFrame(int(attempts % fixtureFrameCount()), QSize(960, 540))
+                              : capture->capture(2000);
             QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
             if (revision != controlRevision || intent != "running" || shuttingDown || stopRequested() || !deletion.isEmpty()) return;
             const auto after = environment ? environment->snapshot() : desktop;

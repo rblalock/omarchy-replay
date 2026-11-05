@@ -788,6 +788,7 @@ public:
         connect(output_, &QComboBox::activated, this, [this] { displayChosen_ = true; });
         form->addRow("&Display", output_);
         displayNote_ = note("Looking for connected displays…");
+        displayNote_->setObjectName("settingDisplayNote");
         form->addRow(QString(), displayNote_);
         interval_ = new QDoubleSpinBox;
         interval_->setObjectName("settingInterval");
@@ -1086,6 +1087,7 @@ public:
             const QString selected = output_->currentData().toString();
             const QSignalBlocker blocker(output_); output_->clear(); output_->addItem("Choose a display", QString());
             output_->addItem("Focused display · follows your focus", kFocusedDisplayChoice);
+            detectedDisplays_ = 0;
             for (const auto& value : displays_.result()) {
                 const auto monitor = value.toObject(); const auto name = monitor.value("name").toString();
                 if (name.isEmpty() || monitor.value("disabled").toBool()) continue;
@@ -1095,6 +1097,7 @@ public:
                 const int width = monitor.value("width").toInt(), height = monitor.value("height").toInt();
                 if (width > 0 && height > 0) label += QString(" · %1 × %2").arg(width).arg(height);
                 output_->addItem(label, name);
+                ++detectedDisplays_;
             }
             if (!selected.isEmpty() && output_->findData(selected) < 0) output_->addItem(selected + " · disconnected", selected);
             output_->setCurrentIndex(std::max(0, output_->findData(selected)));
@@ -1115,7 +1118,7 @@ private:
     void updateDisplayNote() {
         if (output_->currentData().toString() == kFocusedDisplayChoice)
             displayNote_->setText("Replay records whichever display has focus at each capture.");
-        else if (output_->count() > 2) displayNote_->setText("Replay follows this physical display.");
+        else if (detectedDisplays_ > 0) displayNote_->setText("Replay follows this physical display.");
         else displayNote_->setText("No displays found. Reconnect your saved display and reopen Settings.");
     }
 
@@ -1128,6 +1131,7 @@ private:
             (selectedMode == "fixed" && selected != saved.output);
         const bool unappliedCapture = recordingStatus_.value("running").toBool() &&
             ((recordingStatus_.contains("interval_seconds") && recordingStatus_.value("interval_seconds").toDouble() != saved.intervalSeconds) ||
+             (recordingStatus_.contains("display_mode") && recordingStatus_.value("display_mode").toString() != saved.displayMode) ||
              (recordingStatus_.contains("output") && recordingStatus_.value("output").toString() != saved.output));
         if (differentCapture || unappliedCapture) {
             capacity_->setText("A new folder, display or capture interval needs its own usage estimate.");
@@ -1285,6 +1289,7 @@ private:
     QFutureWatcher<QJsonArray> displays_;
     QJsonArray visibleWindows_;
     QString compositorInstance_;
+    int detectedDisplays_ = 0;
 };
 
 QString elapsedDescription(qint64 milliseconds) {

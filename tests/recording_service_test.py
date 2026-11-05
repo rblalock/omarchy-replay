@@ -318,15 +318,20 @@ def main():
             assert focused['display_mode'] == 'focused', 'status lost the configured display mode'
             assert focused['output'] == '' and focused['last_capture_target'] == 'TEST-1', 'focused mode without a configured display did not record the focused display'
             assert focused['recording_output'] == 'TEST-1'
+            assert focused['capture_connections'] >= 1, 'focused mode never bound a capture source'
+            connections = focused['capture_connections']; time.sleep(1.1)
+            assert status()['capture_connections'] == connections, 'an unchanged display rebound the capture source'
             call('pause')
             assert status()['recording_output'] == '', 'a non-recording state kept its last capture display'
             # R4: a focus move before the next tick moves the capture target.
             config.write_text(valid_config.replace('interval_seconds=0.5', 'display_mode="focused"\ninterval_seconds=0.5')); call('reload')
             focus_desktop(); retained = count(); call('start')
             eventually(lambda: count() > retained)
+            connections = status()['capture_connections']
             focus_desktop(False)
             eventually(lambda: status()['recording_output'] == 'TEST-2')
             assert status()['last_capture_target'] == 'TEST-2', 'the capture target did not follow focus'
+            assert status()['capture_connections'] > connections, 'a focus move did not rebind the capture source'
             assert status()['output'] == 'TEST-1', 'a focus move changed the configured display'
             # R5: zero focused displays block capture without substitution.
             desktop(monitors=[dict(monitor, focused=False), dict(second_monitor, focused=False)])

@@ -657,7 +657,10 @@ EnvironmentSnapshot RecordingEnvironment::snapshot() {
             !window.value("address").isString() || window.value("title").toString().size() > 4096) { malformed = true; break; }
         // Include unfocused, pinned, floating, grouped-visible and straddling
         // windows. Never infer privacy from focus or another window's occlusion.
-        if (!QRectF(x, y, w, h).intersects(displayBounds)) continue;
+        const bool onSelectedDisplay = QRectF(x, y, w, h).intersects(displayBounds);
+        // Focus mode lists every display's windows so the exclusion picker can
+        // name one before it receives focus; only the selected display can pause.
+        if (!onSelectedDisplay && !d->options.followFocus) continue;
         const auto app = window.value("class").toString(), initialApp = window.value("initialClass").toString();
         const auto title = window.value("title").toString(), address = window.value("address").toString().toLower();
         bool strict = d->options.excludedApps.contains(app) || d->options.excludedApps.contains(initialApp);
@@ -679,8 +682,8 @@ EnvironmentSnapshot RecordingEnvironment::snapshot() {
         result.visibleWindows.append(QJsonObject{{"address", address}, {"app_id", app}, {"initial_app_id", initialApp},
             {"title", title}, {"excluded", excluded}, {"exclusion_mode", strict ? "strict" : skipped ? "skip" : ""},
             {"at", window.value("at")}, {"size", window.value("size")}});
-        if (excluded && !result.excludedApps.contains(app)) result.excludedApps.append(app);
-        excludedVisible = excludedVisible || pause;
+        if (excluded && onSelectedDisplay && !result.excludedApps.contains(app)) result.excludedApps.append(app);
+        excludedVisible = excludedVisible || (pause && onSelectedDisplay);
     }
     if (malformed) { result.visibleWindows = {}; block("window_state_unknown", "Window visibility or exclusion matching could not be verified."); return result; }
     if (d->options.exclusionMaskToken.isEmpty() || !observed.exclusionsVerified) {

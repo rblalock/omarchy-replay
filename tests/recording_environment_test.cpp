@@ -131,7 +131,10 @@ void focusedOutput() {
     // R6: an excluded app on the unfocused display does not pause the focused
     // capture, and the same app pauses once its own display has focus.
     observed.windows = {window("com.onepassword.OnePassword", 2000)};
-    require(environment.snapshot().captureAllowed, "An excluded window on the unfocused display paused the capture");
+    const auto unfocusedWindow = environment.snapshot();
+    require(unfocusedWindow.captureAllowed && unfocusedWindow.visibleWindows.size() == 1 &&
+            !unfocusedWindow.excludedApps.contains("com.onepassword.OnePassword"),
+            "Focus mode hid an unfocused display's windows from the exclusion picker or paused on them");
     first["focused"] = false; second["focused"] = true; observed.monitors = {first, second};
     const auto switched = environment.snapshot();
     require(!switched.captureAllowed && switched.reason == "excluded_window" && switched.selectedOutput == "TEST-2",

@@ -757,6 +757,37 @@ private slots:
         viewer->close();
     }
 
+    void settingsDisplayNoteCountsDetectedConnectorsOnly() {
+        QTemporaryDir temporary;
+        ViewerEnvironment environment(temporary.path());
+        auto document = replay::loadReplayConfig();
+        document.config.output = "MISSING-1";
+        replay::saveReplayConfig(document.config, document.original);
+        FakeRecording service;
+        auto hooks = service.hooks();
+        hooks.displays = [] { return QJsonArray{}; };
+        auto viewer = replay::createViewer(replay::replayPaths().historyDirectory, hooks);
+        viewer->show(); viewer->activateWindow();
+        QTRY_VERIFY(!viewer->property("historyLoading").toBool());
+        QTest::keyClick(viewer->findChild<QLineEdit*>("recallSearch"), Qt::Key_Escape);
+        QTest::keyClick(viewer.get(), Qt::Key_I);
+        auto* settings = viewer->findChild<QPushButton*>("openReplaySettings");
+        bool visited = false;
+        QTimer::singleShot(0, [&] {
+            auto* dialog = viewer->findChild<QDialog*>("replaySettings");
+            QVERIFY(dialog); visited = true;
+            QTimer::singleShot(15000, dialog, &QDialog::reject);
+            auto* note = dialog->findChild<QLabel*>("settingDisplayNote"); QVERIFY(note);
+            // The saved display is listed as disconnected next to the two
+            // fixed entries; none of those is a detected connector.
+            QTRY_VERIFY(note->text().contains("No displays found"));
+            QTest::keyClick(dialog, Qt::Key_Escape);
+        });
+        settings->setFocus(); QTest::keyClick(settings, Qt::Key_Space);
+        QVERIFY(visited);
+        viewer->close();
+    }
+
     void exclusionPresetsMergeOnlyOnRequestAndSaveExplicitly() {
         QTemporaryDir temporary;
         QVERIFY(temporary.isValid());
