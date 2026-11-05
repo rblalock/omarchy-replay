@@ -27,7 +27,7 @@ Each tab groups related fields and scrolls in smaller windows. **Details** expan
 | Exclusions | Apps and window rules that should stay out of future captures. |
 | Meetings (optional) | Enable completed-transcript imports and choose Meeting Recorder's source folder. |
 
-The Display dropdown lists detected connectors with their model and resolution. A saved disconnected display remains visible as unavailable. Replay pins the selected hardware identity and waits if it disappears. Deliberately choosing a different display clears the old identity so Replay can verify the new selection.
+The Display dropdown lists detected connectors with their model and resolution, plus **Focused display**, which records whichever display has focus at each capture. A saved disconnected display remains visible as unavailable. In fixed mode Replay pins the selected hardware identity and waits if it disappears; deliberately choosing a different display clears the old identity so Replay can verify the new selection. Focused mode pins no identity: every connected display is eligible once it has focus, and the focused display must still pass the usual off, mirror, lock, sleep and exclusion checks. Privacy note: in focused mode any display that receives focus is recorded, including a projector or TV — choose a fixed display or add exclusions when that is not wanted.
 
 **Copy setup prompt**, **Copy resources prompt** and **Copy exclusions prompt** prepare instructions for your coding agent. Paste the prompt into the agent you use, then describe your requested change. Prompts include the installed executable, resolved local paths, supported TOML options, diagnostic commands and a link to the remote source repository. They work without a local checkout and do not include captured OCR, screenshots or window titles. Copying a prompt does not launch an agent or apply settings. Values still being edited can differ from the saved TOML; the prompt tells the agent to check the file.
 
@@ -44,7 +44,7 @@ The Display dropdown lists detected connectors with their model and resolution. 
 
 The **I** panel separates Recording and Search index. It shows capture state, storage usage, searchable/pending counts and the oldest waiting age. **Storage details** expands the forecast explanation; **Processing details** shows CPU allowances and worker-limit availability. The sections sit side by side in wide windows and stack with scrolling in smaller ones.
 
-Capture waits while locked, asleep, inactive, disconnected from the selected display, blocked by an exclusion or unable to verify its environment. It resumes after a temporary block only when saved intent is running. Wake and unlock never override a manual pause or stop.
+Capture waits while locked, asleep, inactive, disconnected from the selected display (in focused mode: while no single display has focus), blocked by an exclusion or unable to verify its environment. It resumes after a temporary block only when saved intent is running. Wake and unlock never override a manual pause or stop.
 
 **Start Replay at login** starts the installed coordinator with saved intent. It does not turn a stopped or paused recorder into a running one.
 
@@ -84,7 +84,7 @@ Those CPU settings apply to screen OCR. The optional meeting importer uses bound
 
 The **I** panel and Recording Settings show current usage and the estimated history the whole allowance can hold. The summary uses calendar days when available, otherwise active recording hours. Expand the storage details for both estimates and the space needed for the chosen age window. Changing the size previews capacity before saving.
 
-Calendar estimates require at least seven retained days. A small allowance may never retain a full week; the active-hours estimate still works. Estimates use observed usage, with no assumed workday length. Changing the display, capture interval or folder starts a fresh usage sample. The active-hours estimate returns after five recorded minutes. Calendar estimates also wait for older observations to leave the archive.
+Calendar estimates require at least seven retained days. A small allowance may never retain a full week; the active-hours estimate still works. Estimates use observed usage, with no assumed workday length. Changing the display, the display mode, capture interval or folder starts a fresh usage sample. The active-hours estimate returns after five recorded minutes. Calendar estimates also wait for older observations to leave the archive.
 
 ## Exclusions
 
@@ -136,6 +136,7 @@ A typical configuration:
 ```toml
 [recording]
 output = "YOUR_OUTPUT"
+# display_mode = "focused" # Records whichever display has focus each capture; output is then ignored.
 interval_seconds = 5.0
 
 [storage]

@@ -23,6 +23,9 @@ struct WindowExclusion {
 
 struct ReplayConfig {
     QString output, outputIdentity;
+    // "fixed" records the configured output. "focused" follows whichever
+    // display has focus at each capture tick (output is then ignored, but kept).
+    QString displayMode = "fixed";
     // Empty uses the XDG history directory. Custom folders must already exist.
     QString storageDirectory;
     double intervalSeconds = 5;
