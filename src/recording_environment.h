@@ -15,6 +15,9 @@ struct EnvironmentOptions {
     // Persist the first accepted identity with the recording configuration.
     // An empty identity is pinned to the first verified selected output.
     QString outputIdentity;
+    // Follow the focused monitor instead of the configured output. The
+    // configured output and identity are then ignored for selection.
+    bool followFocus = false;
     QStringList excludedApps = defaultAppExclusions();
     QStringList skippedApps = defaultSkippedApps();
     QVector<WindowExclusion> excludedWindows;
@@ -53,6 +56,9 @@ struct EnvironmentSnapshot {
     quint64 generation = 0;
     quint64 configGeneration = 0;
     QString outputIdentity;
+    // Display chosen by this snapshot: the configured output in fixed mode, the
+    // focused monitor in focus mode. Empty when no selection succeeded.
+    QString selectedOutput;
     QString compositorInstance;
     QString waylandDisplay;
     // Private local UI data only; do not put window titles in numeric reports.
