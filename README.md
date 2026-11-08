@@ -15,6 +15,8 @@ Find things you saw on your screen. Omarchy Replay records one selected display 
 - Adjust capture rate, retention, storage location and CPU allowances.
 - Pause capture when locked, asleep, or the selected display is unavailable.
 - Exclude apps and windows, with password-manager defaults and optional gaming/media presets.
+- Index text in other languages with Tesseract language sets such as `eng+fra`.
+- Let your coding agent search history through the read-only `recall` command and its versioned JSON.
 - Configure and diagnose Replay with your installed coding agent using copyable prompts.
 
 ## Install the plugin

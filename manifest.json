@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.rblalock.omarchy-replay",
   "name": "Omarchy Replay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Rick Blalock",
   "license": "MIT",
   "description": "Search what you saw on screen, with local OCR and a keyboard-driven timeline.",
