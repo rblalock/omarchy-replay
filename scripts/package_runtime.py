@@ -28,6 +28,7 @@ PAYLOAD = {
     'scripts/install_capture_exclusions.py': 0o644,
     'scripts/install_viewer_exclusion.py': 0o644,
     'scripts/migrate_replay_paths.py': 0o644,
+    'scripts/replay_mcp.py': 0o644,
     'config/hypr/replay-viewer.lua': 0o644,
     'config/hypr/replay-window.lua': 0o644,
     'LICENSE': 0o644,
