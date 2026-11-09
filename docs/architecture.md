@@ -212,7 +212,7 @@ The opt-in [exclusion scope check](../scripts/exclusion_scope_check.py) verifies
 
 Performance comparisons must report retained observations, indexed coverage, oldest pending age, CPU, memory, disk growth and foreground impact together. Count the coordinator, OCR worker, managed child and optional importer when measuring process cost. Distinguish OCR CPU time from elapsed time that includes pacing. Compare the same images and recognition results when evaluating an optimization.
 
-Current limits include one selected display, local storage, imperfect OCR and sampling gaps. S3-compatible offload, cross-device access and semantic retrieval remain roadmap work. The `recall` CLI supplies structured evidence (search, moment fetch, meetings, coverage) to a coding agent over read-only connections; an MCP adapter and Replay executing the agent's tasks remain roadmap work.
+Current limits include one selected display, local storage, imperfect OCR and sampling gaps. S3-compatible offload, cross-device access and semantic retrieval remain roadmap work. The `recall` CLI supplies structured evidence (search, moment fetch, meetings, coverage) to a coding agent over read-only connections, and `scripts/replay_mcp.py` exposes the same commands as an optional stdio MCP adapter; Replay executing the agent's tasks remains roadmap work.
 
 ## Source map
 
